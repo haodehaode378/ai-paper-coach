@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Paper Coach Results</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="font-serif bg-[#f5e6d3] text-[#8b4513] min-h-screen">
+  <div class="border-b-2 border-[#8b4513] shadow-[0_2px_4px_rgba(139,69,19,0.1)]">
+    <header class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-6 flex items-center justify-between gap-4">
+      <div>
+        <h1 class="font-serif uppercase tracking-widest text-3xl md:text-5xl">AI Paper Coach</h1>
+        <p id="paperMetaLine" class="text-sm md:text-base mt-2"></p>
+      </div>
+      <a href="./index.html" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">返回任务页</a>
+    </header>
+  </div>
+
+  <main class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-14 md:py-24 lg:py-32 pb-72 md:pb-80 space-y-8">
+    <section class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8 shadow-[0_4px_8px_rgba(139,69,19,0.15)]">
+      <h2 class="font-serif uppercase tracking-widest text-2xl md:text-3xl mb-4">结果渲染</h2>
+      <div id="renderedResult" class="space-y-6 text-sm md:text-base"></div>
+    </section>
+  </main>
+
+  <section class="fixed bottom-0 left-0 right-0 border-t-2 border-[#8b4513] bg-[#f5e6d3] font-serif shadow-[0_-4px_8px_rgba(139,69,19,0.15)] z-50">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-4 md:py-5">
+      <h2 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-3">运行状态</h2>
+      <ol id="statusList" class="max-h-40 md:max-h-48 overflow-auto space-y-2 text-sm md:text-base"></ol>
+    </div>
+  </section>
+
+  <script>
+    const LAST_RESULT_KEY = 'apc_last_result_v1';
+    const statusListEl = document.getElementById('statusList');
+    const renderedResultEl = document.getElementById('renderedResult');
+    const paperMetaLineEl = document.getElementById('paperMetaLine');
+
+    function addStatus(message) {
+      const li = document.createElement('li');
+      li.className = 'text-[#8b4513]';
+      li.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+      statusListEl.prepend(li);
+    }
+
+    function getContext() {
+      const params = new URLSearchParams(window.location.search);
+      const queryPaperId = params.get('paper_id');
+      const queryApiBase = params.get('api_base');
+      if (queryPaperId && queryApiBase) {
+        return { paper_id: queryPaperId, api_base: queryApiBase };
+      }
+      try {
+        const raw = localStorage.getItem(LAST_RESULT_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function callApi(base, path) {
+      const res = await fetch(base.replace(/\/$/, '') + path);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status} ${res.statusText}: ${text}`);
+      }
+      return await res.json();
+    }
+
+    function listToHtml(items) {
+      if (!Array.isArray(items) || !items.length) return '<p>-</p>';
+      return `<ul class="list-disc pl-6 space-y-2">${items.map(x => `<li>${escapeHtml(typeof x === 'string' ? x : JSON.stringify(x))}</li>`).join('')}</ul>`;
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function renderReport(report, paperId) {
+      const meta = report.paper_meta || {};
+      const summary = report.three_minute_summary || {};
+      const repro = report.reproduction_guide || {};
+      const readingQa = report.reading_qa || {};
+
+      paperMetaLineEl.textContent = `Paper ID: ${paperId}  标题: ${meta.title || '未命名论文'}`;
+
+      renderedResultEl.innerHTML = `
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">三分钟摘要</h3>
+          <p class="leading-7"><strong>问题：</strong>${escapeHtml(summary.problem || '-')}</p>
+          <div class="mt-4"><strong>方法要点：</strong>${listToHtml(summary.method_points || [])}</div>
+          <div class="mt-4"><strong>关键结果：</strong>${listToHtml(summary.key_results || [])}</div>
+          <div class="mt-4"><strong>局限性：</strong>${listToHtml(summary.limitations || [])}</div>
+          <p class="mt-4 leading-7"><strong>适合谁读：</strong>${escapeHtml(summary.who_should_read || '-')}</p>
+        </div>
+
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">类比解释</h3>
+          <p class="leading-7">${escapeHtml((report.teach_classmate || {}).analogy || '-')}</p>
+        </div>
+
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">可复现步骤</h3>
+          <p class="leading-7"><strong>环境：</strong>${escapeHtml(repro.environment || '-')}</p>
+          <p class="mt-4 leading-7"><strong>数据集：</strong>${escapeHtml(repro.dataset || '-')}</p>
+          <div class="mt-4"><strong>命令：</strong>${listToHtml(repro.commands || [])}</div>
+          <div class="mt-4"><strong>关键超参数：</strong>${listToHtml(repro.key_hyperparams || [])}</div>
+          <p class="mt-4 leading-7"><strong>预期结果范围：</strong>${escapeHtml(repro.expected_range || '-')}</p>
+          <div class="mt-4"><strong>常见错误：</strong>${listToHtml(repro.common_errors || [])}</div>
+        </div>
+
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">论文阅读问答</h3>
+          <div class="space-y-5">
+            <p class="leading-7"><strong>1. 论文试图解决什么问题？这是否是一个新的问题？</strong><br>${escapeHtml(readingQa.q1_problem_and_novelty || '-')}</p>
+            <p class="leading-7"><strong>2. 有哪些相关研究？如何归类？谁是这一课题在领域内值得关注的研究者（公司）？</strong><br>${escapeHtml(readingQa.q2_related_work_and_researchers || '-')}</p>
+            <p class="leading-7"><strong>3. 论文中提到的解决方案之关键是什么？</strong><br>${escapeHtml(readingQa.q3_key_idea || '-')}</p>
+            <p class="leading-7"><strong>4. 论文中的实验是如何设计的？</strong><br>${escapeHtml(readingQa.q4_experiment_design || '-')}</p>
+            <p class="leading-7"><strong>5. 用于定量评估的数据集是什么？代码有没有开源？</strong><br>${escapeHtml(readingQa.q5_dataset_and_code || '-')}</p>
+            <p class="leading-7"><strong>6. 文中的实验及结果有没有很好地支持需要验证的科学假设/提出方案？</strong><br>${escapeHtml(readingQa.q6_support_for_claims || '-')}</p>
+            <p class="leading-7"><strong>7. 这篇论文到底有什么贡献？下一步呢？有什么工作可以继续深入？</strong><br>${escapeHtml(readingQa.q7_contribution_and_next_step || '-')}</p>
+          </div>
+        </div>
+      `;
+    }
+
+    async function main() {
+      const context = getContext();
+      if (!context || !context.paper_id || !context.api_base) {
+        addStatus('未找到可用的 paper_id 或 API 地址，请返回任务页重新提交。');
+        return;
+      }
+
+      addStatus(`正在拉取 paper_id=${context.paper_id} 的报告...`);
+      try {
+        const report = await callApi(context.api_base, `/report/${encodeURIComponent(context.paper_id)}`);
+        renderReport(report, context.paper_id);
+        addStatus('报告加载完成。');
+      } catch (err) {
+        addStatus(`错误：${err.message}`);
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

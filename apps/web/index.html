@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Paper Coach</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="font-serif bg-[#f5e6d3] text-[#8b4513] min-h-screen">
+  <div class="border-b-2 border-[#8b4513] shadow-[0_2px_4px_rgba(139,69,19,0.1)]">
+    <header class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-6">
+      <h1 class="font-serif uppercase tracking-widest text-3xl md:text-5xl">AI Paper Coach</h1>
+    </header>
+  </div>
+
+  <main class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-14 md:py-24 lg:py-32 pb-72 md:pb-80 space-y-8">
+    <section class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8 shadow-[0_4px_8px_rgba(139,69,19,0.15)]">
+      <h2 class="font-serif uppercase tracking-widest text-2xl md:text-3xl mb-6">任务输入</h2>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div>
+          <label for="apiBase" class="block text-xs md:text-sm uppercase tracking-widest mb-2">后端 API 地址</label>
+          <input id="apiBase" value="http://localhost:8000" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+        </div>
+
+        <div>
+          <p class="block text-xs md:text-sm uppercase tracking-widest mb-2">运行模式</p>
+          <div class="w-full border-2 border-[#8b4513] bg-[#8b4513]/5 text-[#8b4513] font-serif px-3 py-2 md:px-4 md:py-3 text-sm md:text-base">
+            精读模式（Qwen -> MiniMax -> Qwen）
+          </div>
+        </div>
+
+        <div>
+          <label for="paperUrl" class="block text-xs md:text-sm uppercase tracking-widest mb-2">论文链接（可选）</label>
+          <input id="paperUrl" placeholder="arXiv / PDF URL" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+        </div>
+
+        <div>
+          <label for="paperFile" class="block text-xs md:text-sm uppercase tracking-widest mb-2">上传论文 PDF（可选）</label>
+          <input id="paperFile" type="file" accept="application/pdf" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+        </div>
+      </div>
+
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-3 items-stretch">
+        <button id="runPipeline" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-[#8b4513] text-[#f5e6d3] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">运行整条流程</button>
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)]">
+          运行完成后会自动跳转到结果页
+        </div>
+      </div>
+
+      <div class="mt-6 border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-4 md:p-6 shadow-[0_2px_4px_rgba(139,69,19,0.1)]">
+        <p class="text-xs md:text-sm uppercase tracking-widest">当前 Paper ID</p>
+        <p id="paperIdText" class="text-sm md:text-base break-all mt-2">-</p>
+      </div>
+    </section>
+
+    <section class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8 shadow-[0_4px_8px_rgba(139,69,19,0.15)]">
+      <h2 class="font-serif uppercase tracking-widest text-2xl md:text-3xl mb-4">模型配置</h2>
+      <p class="text-sm md:text-base mb-4">这个页面只负责提交任务和配置模型。报告结果会跳转到单独页面展示。</p>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-4 md:p-6">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-3">Qwen</h3>
+          <label for="qwenBase" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Base URL</label>
+          <input id="qwenBase" value="https://dashscope.aliyuncs.com/compatible-mode/v1" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
+          <label for="qwenKey" class="block text-xs md:text-sm uppercase tracking-widest mb-1">API Key</label>
+          <input id="qwenKey" type="password" value="" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
+          <label for="qwenModel" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Model</label>
+          <input id="qwenModel" value="qwen3.6-plus" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+        </div>
+
+        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-4 md:p-6">
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-3">MiniMax</h3>
+          <label for="minimaxBase" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Base URL</label>
+          <input id="minimaxBase" value="https://api.minimax.chat/v1" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
+          <label for="minimaxKey" class="block text-xs md:text-sm uppercase tracking-widest mb-1">API Key</label>
+          <input id="minimaxKey" type="password" value="" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
+          <label for="minimaxModel" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Model</label>
+          <input id="minimaxModel" value="MiniMax-M2.5" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <button id="saveConfig" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">保存模型配置到本地</button>
+        <button id="clearConfig" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">清空本地模型配置</button>
+      </div>
+    </section>
+
+  </main>
+
+  <section class="fixed bottom-0 left-0 right-0 border-t-2 border-[#8b4513] bg-[#f5e6d3] font-serif shadow-[0_-4px_8px_rgba(139,69,19,0.15)] z-50">
+    <div class="max-w-6xl mx-auto px-6 md:px-10 lg:px-16 py-4 md:py-5">
+      <h2 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-3">运行状态</h2>
+      <ol id="statusList" class="max-h-40 md:max-h-48 overflow-auto space-y-2 text-sm md:text-base"></ol>
+    </div>
+  </section>
+
+  <script>
+    const STORAGE_KEY = 'apc_model_config_v1';
+    const LAST_RESULT_KEY = 'apc_last_result_v1';
+
+    const apiBaseEl = document.getElementById('apiBase');
+    const paperUrlEl = document.getElementById('paperUrl');
+    const paperFileEl = document.getElementById('paperFile');
+    const statusListEl = document.getElementById('statusList');
+    const paperIdTextEl = document.getElementById('paperIdText');
+    const qwenBaseEl = document.getElementById('qwenBase');
+    const qwenKeyEl = document.getElementById('qwenKey');
+    const qwenModelEl = document.getElementById('qwenModel');
+    const minimaxBaseEl = document.getElementById('minimaxBase');
+    const minimaxKeyEl = document.getElementById('minimaxKey');
+    const minimaxModelEl = document.getElementById('minimaxModel');
+
+    let currentPaperId = '';
+
+    function addStatus(message) {
+      const li = document.createElement('li');
+      li.className = 'text-[#8b4513]';
+      li.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+      statusListEl.prepend(li);
+    }
+
+    function setPaperId(id) {
+      currentPaperId = id || '';
+      paperIdTextEl.textContent = currentPaperId || '-';
+    }
+
+    function getModelConfig() {
+      return {
+        qwen: {
+          base_url: qwenBaseEl.value.trim(),
+          api_key: qwenKeyEl.value.trim(),
+          model: qwenModelEl.value.trim() || 'qwen3.6-plus'
+        },
+        minimax: {
+          base_url: minimaxBaseEl.value.trim(),
+          api_key: minimaxKeyEl.value.trim(),
+          model: minimaxModelEl.value.trim() || 'MiniMax-M2.5'
+        }
+      };
+    }
+
+    function fillModelConfig(config) {
+      if (!config) return;
+      const q = config.qwen || {};
+      const m = config.minimax || {};
+      qwenBaseEl.value = q.base_url || '';
+      qwenKeyEl.value = q.api_key || '';
+      qwenModelEl.value = q.model || 'qwen3.6-plus';
+      minimaxBaseEl.value = m.base_url || '';
+      minimaxKeyEl.value = m.api_key || '';
+      minimaxModelEl.value = m.model || 'MiniMax-M2.5';
+    }
+
+    function saveModelConfig() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(getModelConfig()));
+      addStatus('模型配置已保存到浏览器本地。');
+    }
+
+    function loadModelConfig() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        fillModelConfig(JSON.parse(raw));
+      } catch {}
+    }
+
+    function clearModelConfig() {
+      localStorage.removeItem(STORAGE_KEY);
+      fillModelConfig({
+        qwen: { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api_key: '', model: 'qwen3.6-plus' },
+        minimax: { base_url: 'https://api.minimax.chat/v1', api_key: '', model: 'MiniMax-M2.5' }
+      });
+      addStatus('本地模型配置已清空。');
+    }
+
+    function saveLastResult(data) {
+      localStorage.setItem(LAST_RESULT_KEY, JSON.stringify(data));
+    }
+
+    function openResultPage(paperId) {
+      const apiBase = encodeURIComponent(apiBaseEl.value.trim());
+      const next = `results.html?paper_id=${encodeURIComponent(paperId)}&api_base=${apiBase}`;
+      window.location.href = next;
+    }
+
+    async function callApi(path, options = {}) {
+      const base = apiBaseEl.value.trim().replace(/\/$/, '');
+      const res = await fetch(base + path, options);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`${res.status} ${res.statusText}: ${text}`);
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return await res.json();
+      return await res.text();
+    }
+
+    async function ingest() {
+      const url = paperUrlEl.value.trim();
+      const file = paperFileEl.files[0];
+      if (!url && !file) throw new Error('请至少提供论文链接或 PDF 文件。');
+
+      addStatus('正在导入输入...');
+      let payload;
+      if (file) {
+        const form = new FormData();
+        form.append('file', file);
+        if (url) form.append('url', url);
+        payload = await callApi('/ingest', { method: 'POST', body: form });
+      } else {
+        payload = await callApi('/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+      }
+
+      const paperId = payload.paper_id || payload.id || payload.paperId;
+      if (!paperId) throw new Error('导入成功但后端未返回 paper_id。');
+      setPaperId(paperId);
+      addStatus(`导入完成，paper_id=${paperId}`);
+      return paperId;
+    }
+
+    async function runAnalyze(paperId, mode, modelConfig) {
+      addStatus(`开始分析阶段（${mode}）...`);
+      const data = await callApi('/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
+      });
+      addStatus('分析阶段完成。');
+      if (Array.isArray(data.warnings) && data.warnings.length) {
+        for (const w of data.warnings) addStatus(`警告：${w}`);
+      }
+    }
+
+    async function runReview(paperId, modelConfig) {
+      addStatus('开始审稿阶段（MiniMax）...');
+      await callApi('/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
+      });
+      addStatus('审稿阶段完成。');
+    }
+
+    async function runFinalize(paperId, mode, modelConfig) {
+      addStatus('开始补丁收敛阶段...');
+      await callApi('/finalize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
+      });
+      addStatus('补丁收敛阶段完成。');
+    }
+
+    document.getElementById('runPipeline').addEventListener('click', async () => {
+      try {
+        const mode = 'deep';
+        const modelConfig = getModelConfig();
+        statusListEl.innerHTML = '';
+        const paperId = await ingest();
+        await runAnalyze(paperId, mode, modelConfig);
+        if (mode !== 'fast') {
+          await runReview(paperId, modelConfig);
+          await runFinalize(paperId, mode, modelConfig);
+        }
+        saveLastResult({ paper_id: paperId, api_base: apiBaseEl.value.trim() });
+        openResultPage(paperId);
+      } catch (err) {
+        addStatus(`错误：${err.message}`);
+      }
+    });
+
+    document.getElementById('saveConfig').addEventListener('click', saveModelConfig);
+    document.getElementById('clearConfig').addEventListener('click', clearModelConfig);
+
+    loadModelConfig();
+    addStatus('页面已就绪。提交任务后会跳转到结果页。');
+  </script>
+</body>
+</html>

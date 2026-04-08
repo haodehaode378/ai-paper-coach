@@ -1,0 +1,15 @@
+你会收到：
+1. 原始 draft JSON
+2. 审稿 review JSON
+
+你的任务是输出“修正后的中文 JSON”，保持原有 schema 不变。
+
+硬性要求：
+1. 全部输出必须是中文。
+2. 只根据 review 中“有依据的 patch_suggestions”做修改。
+3. 不要把整个对象包进 `draft` 或 `final` 字段。
+4. `three_minute_summary`、`teach_classmate`、`reproduction_guide`、`reading_qa` 必须保持对象结构。
+5. `method_points`、`key_results`、`limitations`、`commands`、`common_errors` 必须是数组。
+6. 如果某些字段仍无依据，请写“论文中未明确说明”。
+7. 在 `change_log` 中记录每项实际修改。
+8. 只输出合法 JSON。
