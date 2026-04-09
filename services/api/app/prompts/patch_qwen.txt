@@ -11,5 +11,7 @@
 4. `three_minute_summary`、`teach_classmate`、`reproduction_guide`、`reading_qa` 必须保持对象结构。
 5. `method_points`、`key_results`、`limitations`、`commands`、`common_errors` 必须是数组。
 6. 如果某些字段仍无依据，请写“论文中未明确说明”。
-7. 在 `change_log` 中记录每项实际修改。
-8. 只输出合法 JSON。
+7. 不允许把 `teach_classmate.elevator_30s` 和 `teach_classmate.classroom_3min` 留空。
+8. 如果修改了 `three_minute_summary.problem`、`teach_classmate.analogy`、`reproduction_guide`、`reading_qa`，修改后仍需尽量满足原有字数要求。
+9. 在 `change_log` 中记录每项实际修改。
+10. 只输出合法 JSON。

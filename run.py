@@ -39,9 +39,15 @@ def _preflight() -> None:
         print(rf"Run: cd {API_DIR} && pip install -r requirements.txt")
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    value = os.getenv(name, default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def main() -> int:
     _preflight()
     python_exe = _python_exe()
+    reload_enabled = _truthy_env("APC_RELOAD", "0")
 
     api_cmd = [
         python_exe,
@@ -52,8 +58,10 @@ def main() -> int:
         "0.0.0.0",
         "--port",
         str(API_PORT),
-        "--reload",
     ]
+
+    if reload_enabled:
+        api_cmd.append("--reload")
 
     web_cmd = [
         python_exe,
@@ -65,6 +73,7 @@ def main() -> int:
     ]
 
     print("[1/3] Starting API server on http://127.0.0.1:8000")
+    print(f"      Reload mode: {'ON' if reload_enabled else 'OFF'} (set APC_RELOAD=1 to enable)")
     api_proc = subprocess.Popen(api_cmd, cwd=str(API_DIR))
 
     print("[2/3] Starting web static server on http://127.0.0.1:5500")

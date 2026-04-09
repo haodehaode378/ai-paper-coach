@@ -8,6 +8,15 @@ from typing import Any
 from app.core.model_router import ModelRouter
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
+REQUIRED_QA_KEYS = [
+    "q1_problem_and_novelty",
+    "q2_related_work_and_researchers",
+    "q3_key_idea",
+    "q4_experiment_design",
+    "q5_dataset_and_code",
+    "q6_support_for_claims",
+    "q7_contribution_and_next_step",
+]
 
 
 def _load(name: str) -> str:
@@ -90,7 +99,7 @@ def _text_len(value: Any) -> int:
     return len(str(value).strip())
 
 
-def _needs_repair(report: dict[str, Any]) -> bool:
+def get_requirement_issues(report: dict[str, Any]) -> list[str]:
     summary = report.get("three_minute_summary", {})
     teach = report.get("teach_classmate", {})
     repro = report.get("reproduction_guide", {})
@@ -104,16 +113,30 @@ def _needs_repair(report: dict[str, Any]) -> bool:
         str(repro.get("dataset", "")),
     ]
 
+    issues: list[str] = []
     if any("Not explicitly stated in paper" in item for item in text_fields):
-        return True
+        issues.append("包含英文兜底短语 Not explicitly stated in paper")
     if any(item and not _contains_chinese(item) for item in text_fields):
-        return True
-    if not summary.get("method_points") or not summary.get("key_results") or not summary.get("limitations"):
-        return True
-    if _text_len(summary.get("problem", "")) < 700:
-        return True
-    if _text_len(teach.get("analogy", "")) < 180:
-        return True
+        issues.append("关键文本字段存在非中文内容")
+    if not summary.get("method_points"):
+        issues.append("three_minute_summary.method_points 为空")
+    if not summary.get("key_results"):
+        issues.append("three_minute_summary.key_results 为空")
+    if not summary.get("limitations"):
+        issues.append("three_minute_summary.limitations 为空")
+    if not str(teach.get("elevator_30s", "")).strip():
+        issues.append("teach_classmate.elevator_30s 为空")
+    if not str(teach.get("classroom_3min", "")).strip():
+        issues.append("teach_classmate.classroom_3min 为空")
+
+    problem_len = _text_len(summary.get("problem", ""))
+    if problem_len < 700:
+        issues.append(f"three_minute_summary.problem 字数不足（{problem_len}/700）")
+
+    analogy_len = _text_len(teach.get("analogy", ""))
+    if analogy_len < 180:
+        issues.append(f"teach_classmate.analogy 字数不足（{analogy_len}/180）")
+
     repro_total = (
         _text_len(repro.get("environment", ""))
         + _text_len(repro.get("dataset", ""))
@@ -123,23 +146,25 @@ def _needs_repair(report: dict[str, Any]) -> bool:
         + _text_len(repro.get("common_errors", []))
     )
     if repro_total < 350:
-        return True
-    required_qa_keys = [
-        "q1_problem_and_novelty",
-        "q2_related_work_and_researchers",
-        "q3_key_idea",
-        "q4_experiment_design",
-        "q5_dataset_and_code",
-        "q6_support_for_claims",
-        "q7_contribution_and_next_step",
-    ]
+        issues.append(f"reproduction_guide 总字数不足（{repro_total}/350）")
+
     if not isinstance(reading_qa, dict):
-        return True
-    if any(not str(reading_qa.get(key, "")).strip() for key in required_qa_keys):
-        return True
-    if any(_text_len(reading_qa.get(key, "")) < 120 for key in required_qa_keys):
-        return True
-    return False
+        issues.append("reading_qa 不是对象")
+        return issues
+    for key in REQUIRED_QA_KEYS:
+        content = str(reading_qa.get(key, "")).strip()
+        length = _text_len(content)
+        if not content:
+            issues.append(f"{key} 为空")
+            continue
+        if length < 120:
+            issues.append(f"{key} 字数不足（{length}/120）")
+
+    return issues
+
+
+def _needs_repair(report: dict[str, Any]) -> bool:
+    return bool(get_requirement_issues(report))
 
 
 def normalize_report(payload: dict[str, Any], source_type: str = "url") -> dict[str, Any]:
@@ -238,46 +263,124 @@ def normalize_report(payload: dict[str, Any], source_type: str = "url") -> dict[
     return normalized
 
 
-def repair_report(*, report: dict[str, Any], chunks: list[dict[str, str]], model_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    router = ModelRouter(model_config=model_config)
+def _append_change_log(report: dict[str, Any], message: str) -> None:
+    logs = report.get("change_log")
+    if not isinstance(logs, list):
+        logs = []
+    logs.append(message)
+    report["change_log"] = logs
+
+
+def _append_requirement_issues(report: dict[str, Any], phase: str) -> None:
+    issues = get_requirement_issues(report)
+    if not issues:
+        return
+    joined = "；".join(issues)
+    _append_change_log(report, f"{phase}存在未达标项：{joined[:900]}")
+
+
+def _provider_label(router: ModelRouter, slot: str) -> str:
+    info = router.provider_info(slot)
+    name = str(info.get("name") or slot)
+    return f"{name}({slot})"
+
+
+def repair_report(
+    *,
+    report: dict[str, Any],
+    chunks: list[dict[str, str]],
+    model_config: dict[str, Any] | None = None,
+    trace_hook: Any | None = None,
+) -> dict[str, Any]:
+    router = ModelRouter(model_config=model_config, trace_hook=trace_hook, trace_phase="repair")
     system = _load("repair_qwen.txt")
     user = json.dumps({"report": report, "chunks": chunks}, ensure_ascii=False)
-    try:
-        raw = router.qwen(system=system, user=user)
-        return normalize_report(raw, source_type=report.get("paper_meta", {}).get("source_type", "url"))
-    except Exception:
-        return report
+
+    errors: list[str] = []
+    for provider in ("primary", "secondary"):
+        try:
+            raw = getattr(router, provider)(system=system, user=user)
+            fixed = normalize_report(raw, source_type=report.get("paper_meta", {}).get("source_type", "url"))
+            _append_change_log(fixed, f"修复阶段使用模型：{_provider_label(router, provider)}")
+            if errors:
+                _append_change_log(fixed, f"模型调用失败，已切换：{' | '.join(errors)[:300]}")
+            issues = get_requirement_issues(fixed)
+            if issues:
+                errors.append(f"{_provider_label(router, provider)}=修复后仍有未达标项")
+                _append_requirement_issues(fixed, "修复阶段")
+                continue
+            return fixed
+        except Exception as e:
+            errors.append(f"{_provider_label(router, provider)}={str(e)}")
+
+    _append_change_log(report, f"repair阶段模型调用失败或结果未达标，保持原稿：{' | '.join(errors)[:300]}")
+    _append_requirement_issues(report, "repair失败后")
+    return report
 
 
-def generate_draft(*, chunks: list[dict[str, str]], source_type: str, model_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    router = ModelRouter(model_config=model_config)
+def generate_draft(
+    *,
+    chunks: list[dict[str, str]],
+    source_type: str,
+    model_config: dict[str, Any] | None = None,
+    trace_hook: Any | None = None,
+) -> dict[str, Any]:
+    router = ModelRouter(model_config=model_config, trace_hook=trace_hook, trace_phase="analyze")
     system = _load("draft_qwen.txt")
     user = json.dumps({"chunks": chunks, "source_type": source_type}, ensure_ascii=False)
-    try:
-        raw = router.qwen(system=system, user=user)
-        report = normalize_report(raw, source_type=source_type)
-        if _needs_repair(report):
-            report = repair_report(report=report, chunks=chunks, model_config=model_config)
-        return report
-    except Exception as e:
-        return _mock_draft(chunks, source_type, failure_reason=str(e))
+
+    errors: list[str] = []
+    for provider in ("primary", "secondary"):
+        try:
+            raw = getattr(router, provider)(system=system, user=user)
+            report = normalize_report(raw, source_type=source_type)
+            _append_change_log(report, f"分析阶段使用模型：{_provider_label(router, provider)}")
+            if errors:
+                _append_change_log(report, f"模型调用失败，已切换：{' | '.join(errors)[:300]}")
+            if _needs_repair(report):
+                report = repair_report(report=report, chunks=chunks, model_config=model_config, trace_hook=trace_hook)
+            _append_requirement_issues(report, "分析阶段输出")
+            return report
+        except Exception as e:
+            errors.append(f"{_provider_label(router, provider)}={str(e)}")
+
+    report = _mock_draft(chunks, source_type, failure_reason=" | ".join(errors))
+    _append_requirement_issues(report, "降级输出")
+    return report
 
 
-def review_draft(*, draft: dict[str, Any], chunks: list[dict[str, str]], model_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    router = ModelRouter(model_config=model_config)
+def review_draft(
+    *,
+    draft: dict[str, Any],
+    chunks: list[dict[str, str]],
+    model_config: dict[str, Any] | None = None,
+    trace_hook: Any | None = None,
+) -> dict[str, Any]:
+    router = ModelRouter(model_config=model_config, trace_hook=trace_hook, trace_phase="review")
     system = _load("review_minimax.txt")
     user = json.dumps({"draft": draft, "chunks": chunks}, ensure_ascii=False)
-    try:
-        return router.minimax(system=system, user=user)
-    except Exception as e:
-        return {
-            "missing_points": [],
-            "unclear_terms": [],
-            "risky_claims": [],
-            "patch_suggestions": [],
-            "review_skipped": True,
-            "reason": f"MiniMax API unavailable: {e}",
-        }
+
+    errors: list[str] = []
+    for provider in ("secondary", "primary"):
+        try:
+            review_data = getattr(router, provider)(system=system, user=user)
+            if isinstance(review_data, dict):
+                review_data.setdefault("review_skipped", False)
+                review_data.setdefault("reason", "")
+                if errors:
+                    review_data["reason"] = f"primary_failed_switch_to_{_provider_label(router, provider)}: {' | '.join(errors)[:300]}"
+            return review_data
+        except Exception as e:
+            errors.append(f"{_provider_label(router, provider)}={str(e)}")
+
+    return {
+        "missing_points": [],
+        "unclear_terms": [],
+        "risky_claims": [],
+        "patch_suggestions": [],
+        "review_skipped": True,
+        "reason": f"Review API unavailable: {' | '.join(errors)[:500]}",
+    }
 
 
 def _set_by_path(data: dict[str, Any], path: str, value: Any) -> None:
@@ -300,31 +403,47 @@ def _set_by_path(data: dict[str, Any], path: str, value: Any) -> None:
         cur[last] = value
 
 
-def patch_draft(*, draft: dict[str, Any], review: dict[str, Any], strict: bool = False, model_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    router = ModelRouter(model_config=model_config)
+def patch_draft(
+    *,
+    draft: dict[str, Any],
+    review: dict[str, Any],
+    strict: bool = False,
+    model_config: dict[str, Any] | None = None,
+    trace_hook: Any | None = None,
+) -> dict[str, Any]:
+    router = ModelRouter(model_config=model_config, trace_hook=trace_hook, trace_phase="finalize")
     system = _load("patch_qwen.txt")
     user = json.dumps({"draft": draft, "review": review}, ensure_ascii=False)
 
-    try:
-        patched = router.qwen(system=system, user=user)
-        patched = normalize_report(patched, source_type=draft.get("paper_meta", {}).get("source_type", "url"))
-        if _needs_repair(patched):
-            patched = repair_report(report=patched, chunks=[], model_config=model_config)
-    except Exception as e:
-        patched = copy.deepcopy(draft)
-        change_log = list(patched.get("change_log", []))
-        for item in review.get("patch_suggestions", []):
-            path = item.get("path")
-            value = item.get("value")
-            instruction = item.get("instruction", "")
-            if path and value is not None:
-                _set_by_path(patched, path, value)
-                change_log.append({"path": path, "instruction": instruction or "Applied local patch"})
-        if strict and len(review.get("risky_claims", [])) >= 3:
-            change_log.append({"path": "system", "instruction": "Strict mode flagged multiple risky claims; manual verification required."})
-        change_log.append({"path": "system", "instruction": f"patch阶段模型调用失败，已使用本地降级逻辑：{str(e)[:300]}"})
-        patched["change_log"] = change_log
+    errors: list[str] = []
+    for provider in ("primary", "secondary"):
+        try:
+            patched = getattr(router, provider)(system=system, user=user)
+            patched = normalize_report(patched, source_type=draft.get("paper_meta", {}).get("source_type", "url"))
+            _append_change_log(patched, f"补丁阶段使用模型：{_provider_label(router, provider)}")
+            if errors:
+                _append_change_log(patched, f"模型调用失败，已切换：{' | '.join(errors)[:300]}")
+            if _needs_repair(patched):
+                patched = repair_report(report=patched, chunks=[], model_config=model_config, trace_hook=trace_hook)
+            _append_requirement_issues(patched, "补丁阶段输出")
+            return patched
+        except Exception as e:
+            errors.append(f"{_provider_label(router, provider)}={str(e)}")
 
+    patched = copy.deepcopy(draft)
+    change_log = list(patched.get("change_log", []))
+    for item in review.get("patch_suggestions", []):
+        path = item.get("path")
+        value = item.get("value")
+        instruction = item.get("instruction", "")
+        if path and value is not None:
+            _set_by_path(patched, path, value)
+            change_log.append({"path": path, "instruction": instruction or "Applied local patch"})
+    if strict and len(review.get("risky_claims", [])) >= 3:
+        change_log.append({"path": "system", "instruction": "Strict mode flagged multiple risky claims; manual verification required."})
+    change_log.append({"path": "system", "instruction": f"patch阶段模型调用失败，已使用本地降级逻辑：{' | '.join(errors)[:500]}"})
+    patched["change_log"] = change_log
+    _append_requirement_issues(patched, "本地补丁输出")
     return patched
 
 

@@ -28,8 +28,8 @@ paper_meta, three_minute_summary, teach_classmate, reproduction_guide, reading_q
   - limitations: 1-3 条，优先写数据规模、泛化性、评测边界、现实部署限制
   - who_should_read: 1 句
 - teach_classmate:
-  - elevator_30s: 留空字符串
-  - classroom_3min: 留空字符串
+  - elevator_30s: 80-120 字，适合口头快速介绍
+  - classroom_3min: 300-500 字，适合课堂上向同学讲解
   - analogy: 约 300 字，用类比方式讲清这篇论文在做什么、为什么有效
   - qa: 数组，可为空
 - reproduction_guide:

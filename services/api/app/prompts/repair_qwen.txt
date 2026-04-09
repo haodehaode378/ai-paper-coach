@@ -15,10 +15,13 @@
 6. 如果论文里确实没有信息，写“论文中未明确说明”。
 7. 字数要求必须满足：
    - `three_minute_summary.problem` 至少 700 字
+   - `teach_classmate.elevator_30s` 不能留空
+   - `teach_classmate.classroom_3min` 不能留空，建议 300 字以上
    - `teach_classmate.analogy` 至少 180 字
    - `reproduction_guide` 各字段合计至少 350 字
    - `reading_qa` 的 7 个回答每个至少 120 字
-7. 优先补全：
+8. 优先补全：
+   - teach_classmate.elevator_30s
    - three_minute_summary.method_points
    - three_minute_summary.key_results
    - three_minute_summary.limitations

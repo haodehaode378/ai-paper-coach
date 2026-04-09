@@ -71,7 +71,23 @@ def init_db() -> None:
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS llm_traces (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                provider_slot TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_system TEXT NOT NULL,
+                request_user TEXT NOT NULL,
+                response_text TEXT,
+                error_text TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_runs_paper_id ON runs(paper_id, started_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_llm_traces_run_id ON llm_traces(run_id, created_at ASC);
             """
         )
 
@@ -183,3 +199,49 @@ def get_outputs(run_id: str) -> dict[str, Any]:
         if data.get(key):
             data[key] = json.loads(data[key])
     return data
+
+
+def append_llm_trace(
+    *,
+    run_id: str,
+    phase: str,
+    provider_slot: str,
+    provider_name: str,
+    model: str,
+    request_system: str,
+    request_user: str,
+    response_text: str | None = None,
+    error_text: str | None = None,
+) -> None:
+    trace_id = str(uuid.uuid4())
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO llm_traces (
+                id, run_id, phase, provider_slot, provider_name, model,
+                request_system, request_user, response_text, error_text, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trace_id,
+                run_id,
+                phase,
+                provider_slot,
+                provider_name,
+                model,
+                request_system,
+                request_user,
+                response_text,
+                error_text,
+                now_iso(),
+            ),
+        )
+
+
+def get_llm_traces(run_id: str) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM llm_traces WHERE run_id = ? ORDER BY created_at ASC",
+            (run_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
