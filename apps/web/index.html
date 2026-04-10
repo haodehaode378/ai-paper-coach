@@ -62,11 +62,11 @@
         <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-4 md:p-6">
           <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-3">Model A</h3>
           <label for="qwenBase" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Base URL</label>
-          <input id="qwenBase" value="https://dashscope.aliyuncs.com/compatible-mode/v1" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
+          <input id="qwenBase" value="https://api.moonshot.cn/v1" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
           <label for="qwenKey" class="block text-xs md:text-sm uppercase tracking-widest mb-1">API Key</label>
           <input id="qwenKey" type="password" value="" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base mb-3" />
           <label for="qwenModel" class="block text-xs md:text-sm uppercase tracking-widest mb-1">Model</label>
-          <input id="qwenModel" value="qwen3.6-plus" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
+          <input id="qwenModel" value="kimi-k2.5" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base" />
         </div>
 
         <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-4 md:p-6">
@@ -84,6 +84,14 @@
         <button id="saveConfig" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">保存模型配置到本地</button>
         <button id="clearConfig" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">清空本地模型配置</button>
         <button id="validateConfig" class="font-serif uppercase tracking-widest transition-colors duration-200 active:opacity-75 border-2 border-[#8b4513] bg-transparent text-[#8b4513] px-4 py-3 text-sm md:text-base shadow-[0_2px_4px_rgba(139,69,19,0.1)] hover:shadow-[0_4px_12px_rgba(139,69,19,0.2)]">验证 API 连通性</button>
+      </div>
+      <div class="mt-4">
+        <label for="runMode" class="block text-xs md:text-sm uppercase tracking-widest mb-1">运行模式</label>
+        <select id="runMode" class="w-full border-2 border-[#8b4513] bg-transparent text-[#8b4513] font-serif focus:outline-none focus:bg-[#8b4513]/5 transition-colors duration-200 px-3 py-2 md:px-4 md:py-3 text-sm md:text-base">
+          <option value="deep">精读模式（默认）</option>
+          <option value="full">全论文切片模式</option>
+          <option value="fast">快速模式</option>
+        </select>
       </div>
     </section>
 
@@ -107,6 +115,9 @@
     const STORAGE_KEY = 'apc_model_config_v1';
     const LAST_RESULT_KEY = 'apc_last_result_v1';
     const TRACE_HISTORY_KEY = 'apc_trace_history_v1';
+    const TIMEOUT_ANALYZE_MS = 480000;
+    const TIMEOUT_REVIEW_MS = 600000;
+    const TIMEOUT_FINALIZE_MS = 1200000;
 
     const apiBaseEl = document.getElementById('apiBase');
     const paperUrlEl = document.getElementById('paperUrl');
@@ -120,6 +131,7 @@
     const minimaxBaseEl = document.getElementById('minimaxBase');
     const minimaxKeyEl = document.getElementById('minimaxKey');
     const minimaxModelEl = document.getElementById('minimaxModel');
+    const runModeEl = document.getElementById('runMode');
 
     let currentPaperId = '';
     let traceTimer = null;
@@ -303,7 +315,7 @@
         name: 'Model A',
         base_url: qwenBaseEl.value.trim(),
         api_key: qwenKeyEl.value.trim(),
-        model: qwenModelEl.value.trim() || 'qwen3.6-plus'
+        model: qwenModelEl.value.trim() || 'kimi-k2.5'
       };
       const modelB = {
         name: 'Model B',
@@ -327,7 +339,7 @@
       const m = config.secondary || config.provider_b || config.minimax || {};
       qwenBaseEl.value = q.base_url || '';
       qwenKeyEl.value = q.api_key || '';
-      qwenModelEl.value = q.model || 'qwen3.6-plus';
+      qwenModelEl.value = q.model || 'kimi-k2.5';
       minimaxBaseEl.value = (m.base_url && m.base_url.trim()) || 'https://api.minimaxi.com/v1';
       minimaxKeyEl.value = m.api_key || '';
       minimaxModelEl.value = m.model || 'MiniMax-M2.5';
@@ -356,7 +368,7 @@
     function clearModelConfig() {
       localStorage.removeItem(STORAGE_KEY);
       fillModelConfig({
-        primary: { name: 'Model A', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api_key: '', model: 'qwen3.6-plus' },
+        primary: { name: 'Model A', base_url: 'https://api.moonshot.cn/v1', api_key: '', model: 'kimi-k2.5' },
         secondary: { name: 'Model B', base_url: 'https://api.minimaxi.com/v1', api_key: '', model: 'MiniMax-M2.5' }
       });
       addStatus('本地模型配置已清空。');
@@ -421,6 +433,11 @@
       }
     }
 
+    function isTimeoutError(err) {
+      const message = err && err.message ? String(err.message) : '';
+      return message.includes('请求超时（>');
+    }
+
     async function ingest() {
       const url = paperUrlEl.value.trim();
       const file = paperFileEl.files[0];
@@ -457,39 +474,52 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
-      }, 240000);
+      }, TIMEOUT_ANALYZE_MS);
       addStatus('分析阶段完成。');
-      if (Array.isArray(data.warnings) && data.warnings.length) {
-        for (const w of data.warnings) addStatus(`警告：${w}`);
-      }
+      emitStageMessages(data, 'analyze');
     }
 
     async function runReview(paperId, modelConfig) {
       addStatus('开始审稿阶段（Model B）...');
-      await callApi('/review', {
+      const data = await callApi('/review', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
-      }, 180000);
+      }, TIMEOUT_REVIEW_MS);
       addStatus('审稿阶段完成。');
+      emitStageMessages(data, 'review');
     }
 
     async function runFinalize(paperId, mode, modelConfig) {
       addStatus('开始补丁收敛阶段...');
-      await callApi('/finalize', {
+      const data = await callApi('/finalize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
-      }, 180000);
+      }, TIMEOUT_FINALIZE_MS);
       addStatus('补丁收敛阶段完成。');
+      emitStageMessages(data, 'finalize');
     }
 
+    function emitStageMessages(data, fallbackStage) {
+      if (Array.isArray(data?.warnings) && data.warnings.length) {
+        for (const w of data.warnings) addStatus(`提示：${w}`);
+      }
+      const metric = data?.stage_metrics;
+      if (metric && typeof metric === 'object') {
+        const stage = metric.stage || fallbackStage || '-';
+        const inputChars = Number(metric.input_chars || 0);
+        const outputChars = Number(metric.output_chars || 0);
+        const elapsedMs = Number(metric.elapsed_ms || 0);
+        addStatus(`阶段指标：${stage} 输入=${inputChars} 输出=${outputChars} 耗时=${elapsedMs}ms`);
+      }
+    }
     document.getElementById('runPipeline').addEventListener('click', async () => {
       try {
-        const mode = 'deep';
+        const mode = runModeEl.value || 'deep';
         const modelConfig = getModelConfig();
         statusListEl.innerHTML = '';
-        addStatus(`本次路由：Model A=${modelConfig.primary.base_url} (${modelConfig.primary.model}) | Model B=${modelConfig.secondary.base_url} (${modelConfig.secondary.model})`);
+        addStatus(`本次路由：Model A=${modelConfig.primary.base_url} (${modelConfig.primary.model}) | Model B=${modelConfig.secondary.base_url} (${modelConfig.secondary.model}) | 模式=${mode}`);
         const paperId = await ingest();
         await runAnalyze(paperId, mode, modelConfig);
         if (mode !== 'fast') {
@@ -500,6 +530,13 @@
         saveLastResult({ paper_id: paperId, api_base: apiBaseEl.value.trim() });
         openResultPage(paperId);
       } catch (err) {
+        if (isTimeoutError(err) && currentPaperId) {
+          addStatus(`提示：${err.message}`);
+          addStatus('提示：后端可能仍在处理中，自动跳转结果页继续观察实时讯息。');
+          saveLastResult({ paper_id: currentPaperId, api_base: apiBaseEl.value.trim() });
+          openResultPage(currentPaperId);
+          return;
+        }
         stopTracePolling();
         addStatus(`错误：${err.message}`);
       }
@@ -514,6 +551,11 @@
   </script>
 </body>
 </html>
+
+
+
+
+
 
 
 

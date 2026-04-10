@@ -244,7 +244,6 @@
 
     function buildRequirementChecks(report) {
       const summary = report.three_minute_summary || {};
-      const teach = report.teach_classmate || {};
       const repro = report.reproduction_guide || {};
       const readingQa = report.reading_qa || {};
 
@@ -257,11 +256,8 @@
         textLen(repro.common_errors || []);
 
       const checks = [
-        { key: 'three_minute_summary.problem', min: 700, actual: textLen(summary.problem || '') },
-        { key: 'teach_classmate.elevator_30s', min: 1, actual: textLen(teach.elevator_30s || '') },
-        { key: 'teach_classmate.classroom_3min', min: 1, actual: textLen(teach.classroom_3min || '') },
-        { key: 'teach_classmate.analogy', min: 180, actual: textLen(teach.analogy || '') },
-        { key: 'reproduction_guide.total', min: 350, actual: reproTotal }
+        { key: 'three_minute_summary.problem', min: 1000, actual: textLen(summary.problem || '') },
+        { key: 'reproduction_guide.total', min: 1000, actual: reproTotal }
       ];
 
       const qaKeys = [
@@ -274,7 +270,7 @@
         'q7_contribution_and_next_step'
       ];
       for (const key of qaKeys) {
-        checks.push({ key: `reading_qa.${key}`, min: 120, actual: textLen(readingQa[key] || '') });
+        checks.push({ key: `reading_qa.${key}`, min: 700, actual: textLen(readingQa[key] || '') });
       }
       return checks.map(item => ({ ...item, ok: item.actual >= item.min }));
     }
@@ -304,19 +300,27 @@
     function renderReport(report, paperId) {
       const meta = report.paper_meta || {};
       const summary = report.three_minute_summary || {};
-      const teach = report.teach_classmate || {};
       const repro = report.reproduction_guide || {};
       const readingQa = report.reading_qa || {};
+      const changeLog = Array.isArray(report.change_log) ? report.change_log : [];
       const requirementChecks = buildRequirementChecks(report);
+      const majorContentLen = textLen(summary.problem || '') + textLen(repro.environment || '') + textLen(repro.dataset || '');
+      const emptyHint = majorContentLen <= 5
+        ? `<div class="border-2 border-red-700 bg-red-50 text-red-700 font-serif p-6 md:p-8">
+             <p class="leading-7"><strong>提示：</strong>当前结果正文为空，通常是模型未配置或调用失败。请先在任务页配置可用模型后重跑流程。</p>
+             <div class="mt-4"><strong>最近日志：</strong>${listToHtml(changeLog.slice(-3))}</div>
+           </div>`
+        : '';
 
       paperMetaLineEl.textContent = `Paper ID: ${paperId}  标题: ${meta.title || '未命名论文'}`;
 
       renderedResultEl.innerHTML = `
+        ${emptyHint}
         ${renderRequirementPanel(requirementChecks)}
 
         <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
-          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">三分钟摘要</h3>
-          <p class="leading-7"><strong>问题：</strong>${escapeHtml(summary.problem || '-')}</p>
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">论文分析（>=1000字）</h3>
+          <pre class="whitespace-pre-wrap break-words leading-7"><strong>正文：</strong>${escapeHtml(summary.problem || '-')}</pre>
           <div class="mt-4"><strong>方法要点：</strong>${listToHtml(summary.method_points || [])}</div>
           <div class="mt-4"><strong>关键结果：</strong>${listToHtml(summary.key_results || [])}</div>
           <div class="mt-4"><strong>局限性：</strong>${listToHtml(summary.limitations || [])}</div>
@@ -324,24 +328,17 @@
         </div>
 
         <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
-          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">讲给同学听</h3>
-          <p class="leading-7"><strong>30秒电梯稿：</strong>${escapeHtml(teach.elevator_30s || '-')}</p>
-          <p class="mt-4 leading-7"><strong>3分钟课堂版：</strong>${escapeHtml(teach.classroom_3min || '-')}</p>
-          <p class="mt-4 leading-7"><strong>类比解释：</strong>${escapeHtml(teach.analogy || '-')}</p>
-        </div>
-
-        <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
-          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">可复现步骤</h3>
-          <p class="leading-7"><strong>环境：</strong>${escapeHtml(repro.environment || '-')}</p>
-          <p class="mt-4 leading-7"><strong>数据集：</strong>${escapeHtml(repro.dataset || '-')}</p>
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">复现指导（>=1000字）</h3>
+          <pre class="whitespace-pre-wrap break-words leading-7"><strong>环境：</strong>${escapeHtml(repro.environment || '-')}</pre>
+          <pre class="mt-4 whitespace-pre-wrap break-words leading-7"><strong>数据集：</strong>${escapeHtml(repro.dataset || '-')}</pre>
           <div class="mt-4"><strong>命令：</strong>${listToHtml(repro.commands || [])}</div>
           <div class="mt-4"><strong>关键超参数：</strong>${listToHtml(repro.key_hyperparams || [])}</div>
-          <p class="mt-4 leading-7"><strong>预期结果范围：</strong>${escapeHtml(repro.expected_range || '-')}</p>
+          <pre class="mt-4 whitespace-pre-wrap break-words leading-7"><strong>预期结果范围：</strong>${escapeHtml(repro.expected_range || '-')}</pre>
           <div class="mt-4"><strong>常见错误：</strong>${listToHtml(repro.common_errors || [])}</div>
         </div>
 
         <div class="border-2 border-[#8b4513] bg-[#f5e6d3] font-serif p-6 md:p-8">
-          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">论文阅读问答</h3>
+          <h3 class="font-serif uppercase tracking-widest text-lg md:text-xl mb-4">七个核心问题（每题>=700字）</h3>
           <div class="space-y-5">
             <p class="leading-7"><strong>1. 论文试图解决什么问题？这是否是一个新的问题？</strong><br>${escapeHtml(readingQa.q1_problem_and_novelty || '-')}</p>
             <p class="leading-7"><strong>2. 有哪些相关研究？如何归类？谁是这一课题在领域内值得关注的研究者（公司）？</strong><br>${escapeHtml(readingQa.q2_related_work_and_researchers || '-')}</p>
@@ -378,6 +375,9 @@
   </script>
 </body>
 </html>
+
+
+
 
 
 

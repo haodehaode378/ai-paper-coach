@@ -23,9 +23,17 @@ PRIORITY_KEYWORDS: tuple[tuple[str, int], ...] = (
     ("conclusion", 105),
 )
 
+# Hard-preserve core sections when present.
+CORE_SECTION_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("abstract", ("abstract",)),
+    ("introduction", ("introduction", "intro")),
+    ("method", ("method", "approach", "architecture", "framework")),
+    ("experiment", ("experiment", "evaluation", "results", "ablation")),
+    ("conclusion", ("conclusion", "discussion", "future work")),
+)
+
 
 def _normalize_body(text: str) -> str:
-    # Keep newlines to preserve paragraph boundaries; normalize intra-line spaces.
     lines = [" ".join(line.split()) for line in text.splitlines()]
     cleaned = "\n".join(line for line in lines if line)
     return cleaned.strip()
@@ -76,6 +84,14 @@ def _section_score(title: str, content: str) -> int:
     return score
 
 
+def _core_slot(title: str) -> str | None:
+    lower = title.lower()
+    for slot, keys in CORE_SECTION_RULES:
+        if any(k in lower for k in keys):
+            return slot
+    return None
+
+
 def _dedupe_keep_order(items: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[tuple[str, str]] = set()
     out: list[dict[str, str]] = []
@@ -88,13 +104,23 @@ def _dedupe_keep_order(items: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     return out
 
 
+def _fit_content_with_budget(content: str, remaining_budget: int, min_chars: int = 240) -> str | None:
+    if remaining_budget <= 0:
+        return None
+    if len(content) <= remaining_budget:
+        return content
+    if remaining_budget < min_chars:
+        return None
+    return _balanced_truncate(content, remaining_budget)
+
+
 def top_chunks(
     sections: dict[str, str],
-    max_sections: int = 6,
-    max_chars_each: int = 1600,
-    max_total_chars: int = 7200,
+    max_sections: int = 5,
+    max_chars_each: int = 1400,
+    max_total_chars: int = 5200,
 ) -> list[dict[str, str]]:
-    candidates: list[dict[str, str]] = []
+    candidates: list[dict[str, str | int | None]] = []
     for title, body in sections.items():
         normalized = _normalize_body(body)
         if not normalized:
@@ -106,28 +132,58 @@ def top_chunks(
                 "content": chunk,
                 "score": _section_score(title, normalized),
                 "raw_len": len(normalized),
+                "core_slot": _core_slot(title),
             }
         )
 
     if not candidates:
         return [{"section": "FULL_TEXT", "content": ""}]
 
-    # Priority first, then content length.
-    candidates.sort(key=lambda x: (x["score"], x["raw_len"]), reverse=True)
+    candidates.sort(key=lambda x: (int(x["score"]), int(x["raw_len"])), reverse=True)
 
     selected: list[dict[str, str]] = []
+    selected_sections: set[str] = set()
     total_chars = 0
+
+    # Pass 1: hard-preserve one section for each core slot when present.
+    for slot, _keys in CORE_SECTION_RULES:
+        if len(selected) >= max_sections:
+            break
+        slot_candidates = [c for c in candidates if c.get("core_slot") == slot]
+        if not slot_candidates:
+            continue
+        best = slot_candidates[0]
+        section = str(best["section"])
+        if section in selected_sections:
+            continue
+        remaining = max_total_chars - total_chars
+        fitted = _fit_content_with_budget(str(best["content"]), remaining)
+        if not fitted:
+            continue
+        selected.append({"section": section, "content": fitted})
+        selected_sections.add(section)
+        total_chars += len(fitted)
+
+    # Pass 2: fill remaining slots by priority while respecting total budget.
     for item in candidates:
         if len(selected) >= max_sections:
             break
-        next_len = len(item["content"])
-        if selected and total_chars + next_len > max_total_chars:
+        section = str(item["section"])
+        if section in selected_sections:
             continue
-        selected.append({"section": item["section"], "content": item["content"]})
-        total_chars += next_len
+        remaining = max_total_chars - total_chars
+        if remaining <= 0:
+            break
+        fitted = _fit_content_with_budget(str(item["content"]), remaining, min_chars=320)
+        if not fitted:
+            continue
+        selected.append({"section": section, "content": fitted})
+        selected_sections.add(section)
+        total_chars += len(fitted)
 
     if not selected:
         first = candidates[0]
-        selected = [{"section": first["section"], "content": first["content"][:max_total_chars]}]
+        fallback = _balanced_truncate(str(first["content"]), max_total_chars)
+        selected = [{"section": str(first["section"]), "content": fallback}]
 
     return _dedupe_keep_order(selected)

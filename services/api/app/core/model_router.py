@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import time
 from typing import Any
 
 import requests
@@ -63,7 +64,7 @@ class ModelRouter:
                 "base": _pick(primary_cfg.get("base_url"), "QWEN_API_BASE", "").rstrip("/"),
                 "key": _pick(primary_cfg.get("api_key"), "QWEN_API_KEY", ""),
                 "model": _pick(primary_cfg.get("model"), "QWEN_MODEL", "qwen-plus"),
-                "timeout_sec": _pick_int(primary_cfg.get("timeout_sec"), "QWEN_TIMEOUT_SEC", 180),
+                "timeout_sec": _pick_int(primary_cfg.get("timeout_sec"), "QWEN_TIMEOUT_SEC", 90),
             },
             "secondary": {
                 "slot": "secondary",
@@ -71,7 +72,7 @@ class ModelRouter:
                 "base": _pick(secondary_cfg.get("base_url"), "MINIMAX_API_BASE", "").rstrip("/"),
                 "key": _pick(secondary_cfg.get("api_key"), "MINIMAX_API_KEY", ""),
                 "model": _pick(secondary_cfg.get("model"), "MINIMAX_MODEL", "MiniMax-M1"),
-                "timeout_sec": _pick_int(secondary_cfg.get("timeout_sec"), "MINIMAX_TIMEOUT_SEC", 180),
+                "timeout_sec": _pick_int(secondary_cfg.get("timeout_sec"), "MINIMAX_TIMEOUT_SEC", 300),
             },
         }
 
@@ -94,6 +95,43 @@ class ModelRouter:
         if normalized.endswith("/chat/completions"):
             return normalized
         return f"{normalized}/chat/completions"
+
+    @staticmethod
+    def _is_kimi_model(base: str, model: str) -> bool:
+        base_l = (base or "").lower()
+        model_l = (model or "").lower()
+        return ("moonshot.cn" in base_l) or ("kimi" in model_l)
+
+    def _resolve_temperature(self, base: str, model: str, *, for_ping: bool = False) -> float:
+        # Kimi models currently require temperature=1.
+        if self._is_kimi_model(base, model):
+            return 1.0
+        return 0.0 if for_ping else 0.2
+
+    def _resolve_timeout(self, base: str, model: str, configured_timeout: int, *, for_ping: bool = False) -> int:
+        if self._is_kimi_model(base, model):
+            # Analyze/Review/Finalize can be long on Kimi; keep ping short but runtime longer.
+            return max(configured_timeout, 180) if not for_ping else max(min(configured_timeout, 90), 30)
+        return configured_timeout
+
+    def _resolve_max_tokens(self) -> int:
+        phase = (self.trace_phase or "").lower()
+        if phase in {"review", "finalize", "repair"}:
+            return 12000
+        if phase == "analyze":
+            return 6000
+        return 2048
+
+    @staticmethod
+    def _looks_like_error_payload(data: Any) -> bool:
+        if not isinstance(data, dict):
+            return False
+        keys = set(data.keys())
+        if not keys:
+            return True
+        if keys.issubset({"error", "status", "message", "detail"}):
+            return True
+        return False
 
     def provider_info(self, slot: str) -> dict[str, Any]:
         p = self.providers.get(slot, {})
@@ -120,94 +158,183 @@ class ModelRouter:
             raise RuntimeError("Missing model API configuration")
 
         url = self._build_chat_url(base)
+        messages = []
+        if isinstance(system, str) and system.strip():
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+
         payload_base = {
             "model": model,
             "temperature": temperature,
-            "max_tokens": 4096,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "max_tokens": self._resolve_max_tokens(),
+            "messages": messages,
         }
 
-        payloads = [
-            {**payload_base, "response_format": {"type": "json_object"}},
-            payload_base,
-        ]
+        # Kimi-k2.5 has strict limitations with JSON mode and temperature.
+        # Skip JSON mode entirely for Kimi to avoid API errors.
+        is_kimi_k25 = self._is_kimi_model(base, model)
+        
+        if is_kimi_k25:
+            # For Kimi, use standard format only (no JSON mode)
+            payloads = [payload_base]
+        else:
+            payloads = [
+                {**payload_base, "response_format": {"type": "json_object"}},
+                payload_base,
+            ]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         errors: list[str] = []
 
         for idx, payload in enumerate(payloads, start=1):
-            try:
-                res = requests.post(url, json=payload, headers=headers, timeout=(8, timeout_sec))
-            except Exception as e:
-                errors.append(f"attempt{idx}: network_error={e}")
-                break
+            # Retry logic for temporary errors (429, 503, 504)
+            max_retries = 3
+            base_delay = 2  # seconds
+            
+            for retry in range(max_retries):
+                try:
+                    res = requests.post(url, json=payload, headers=headers, timeout=(8, timeout_sec))
+                except Exception as e:
+                    errors.append(f"attempt{idx}: network_error={e}")
+                    break
 
-            if not res.ok:
-                body = (res.text or "")[:300]
-                errors.append(f"attempt{idx}: status={res.status_code}, body={body}")
-                if idx == 1 and res.status_code in {400, 404, 415, 422}:
-                    continue
-                break
+                if not res.ok:
+                    body = (res.text or "")[:300]
+                    status_code = res.status_code
+                    
+                    # Handle temporary service errors with exponential backoff
+                    if status_code in {429, 503, 504} and retry < max_retries - 1:
+                        # Extract Retry-After header if available
+                        retry_after = res.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                wait_time = float(retry_after)
+                            except ValueError:
+                                wait_time = base_delay * (2 ** retry)
+                        else:
+                            wait_time = base_delay * (2 ** retry)
+                        
+                        errors.append(f"attempt{idx}-retry{retry+1}: status={status_code}, waiting {wait_time:.1f}s")
+                        time.sleep(min(wait_time, 30))  # Cap wait time at 30 seconds
+                        continue
+                    
+                    # For other 4xx errors on first payload, try next payload
+                    errors.append(f"attempt{idx}: status={status_code}, body={body}")
+                    if idx == 1 and status_code in {400, 404, 415, 422}:
+                        break  # Exit retry loop, try next payload
+                    break  # Exit retry loop
 
-            try:
-                data = res.json()
-                return data["choices"][0]["message"]["content"]
-            except Exception as e:
-                body = (res.text or "")[:300]
-                errors.append(f"attempt{idx}: invalid_response={e}, body={body}")
-                if idx == 1:
-                    continue
-                break
+                try:
+                    data = res.json()
+                    return data["choices"][0]["message"]["content"]
+                except Exception as e:
+                    body = (res.text or "")[:300]
+                    errors.append(f"attempt{idx}: invalid_response={e}, body={body}")
+                    if idx == 1:
+                        break  # Exit retry loop, try next payload
+                    break  # Exit retry loop
+            
+            # If we exhausted retries on first payload with non-retryable error, try next
+            if idx == 1 and any(f"attempt{idx}: status=" in e for e in errors):
+                continue
 
         raise RuntimeError("Model API call failed: " + " | ".join(errors))
 
     @staticmethod
     def safe_json(text: str) -> dict[str, Any]:
-        text = text.strip()
+        text = (text or "").strip()
+        # Remove reasoning blocks like <think>...</think> when providers leak them.
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+        # Some providers may return an unclosed <think> block; trim it from head.
+        text = re.sub(r"^\s*<think>[\s\S]*?(?:</think>|(?=\{)|$)", "", text, flags=re.IGNORECASE).strip()
         if text.startswith("```"):
             # Handle fenced outputs like ```json ... ```
             text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
             text = re.sub(r"\s*```$", "", text)
             text = text.strip()
 
-        # Fast path: content is already a clean JSON object.
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict):
-                return data
-            raise ValueError("Model response is valid JSON but not a JSON object")
-        except Exception:
-            pass
-
-        # Fallback: extract the first decodable JSON object and ignore trailing junk.
-        decoder = json.JSONDecoder()
-        for match in re.finditer(r"\{", text):
-            start = match.start()
+        def _loads_obj(raw: str) -> dict[str, Any] | None:
             try:
-                obj, _end = decoder.raw_decode(text[start:])
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                return None
+            return None
+
+        def _obj_score(obj: dict[str, Any]) -> int:
+            target_keys = {
+                "paper_meta",
+                "three_minute_summary",
+                "teach_classmate",
+                "reproduction_guide",
+                "reading_qa",
+                "evidence_refs",
+                "change_log",
+                "missing_points",
+                "unclear_terms",
+                "risky_claims",
+                "patch_suggestions",
+            }
+            return sum(1 for k in obj.keys() if k in target_keys)
+
+        hit = _loads_obj(text)
+        if hit is not None:
+            return hit
+
+        candidate = text.strip()
+        if candidate.startswith("{"):
+            candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
+            open_cnt = candidate.count("{")
+            close_cnt = candidate.count("}")
+            if open_cnt > close_cnt:
+                candidate = candidate + ("}" * (open_cnt - close_cnt))
+            hit = _loads_obj(candidate)
+            if hit is not None:
+                return hit
+
+        decoder = json.JSONDecoder()
+        best_obj: dict[str, Any] | None = None
+        best_score = -1
+        best_size = -1
+        for match in re.finditer(r"\{", text):
+            start_idx = match.start()
+            piece = text[start_idx:]
+            piece = re.sub(r",\s*([}\]])", r"\1", piece)
+            try:
+                obj, _end = decoder.raw_decode(piece)
                 if isinstance(obj, dict):
-                    return obj
+                    score = _obj_score(obj)
+                    size = len(json.dumps(obj, ensure_ascii=False))
+                    if score > best_score or (score == best_score and size > best_size):
+                        best_obj = obj
+                        best_score = score
+                        best_size = size
             except Exception:
                 continue
 
-        raise ValueError("Unable to parse JSON object from model response")
+        if best_obj is not None:
+            return best_obj
 
+        raise ValueError("Unable to parse JSON object from model response")
     def _call_slot(self, slot: str, system: str, user: str) -> dict[str, Any]:
         p = self.providers.get(slot)
         if not p:
             raise RuntimeError(f"Unknown provider slot: {slot}")
 
         try:
+            timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
+            temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
             content = self._chat(
                 base=p["base"],
                 key=p["key"],
                 model=p["model"],
                 system=system,
                 user=user,
-                timeout_sec=p["timeout_sec"],
+                timeout_sec=timeout_sec,
+                temperature=temperature,
             )
+            if not (content or "").strip() or (content or "").strip() in {"-", "—"}:
+                raise RuntimeError("empty_model_output")
             self._emit_trace(
                 slot=slot,
                 provider_name=p.get("name") or slot,
@@ -216,7 +343,38 @@ class ModelRouter:
                 user=user,
                 response_text=content,
             )
-            return self.safe_json(content)
+            try:
+                parsed = self.safe_json(content)
+                if self._looks_like_error_payload(parsed):
+                    raise RuntimeError("invalid_json_payload")
+                return parsed
+            except Exception:
+                repair_system = "你上一次输出不是合法 JSON。现在只输出一个合法 JSON 对象，不要任何解释和代码块。"
+                repair_source = (content or "").strip()[:12000]
+                if not repair_source:
+                    raise RuntimeError("empty_model_output_for_json_repair")
+                repair_user = f"请把下面文本修复为合法 JSON 对象：\n\n{repair_source}"
+                repaired = self._chat(
+                    base=p["base"],
+                    key=p["key"],
+                    model=p["model"],
+                    system=repair_system,
+                    user=repair_user,
+                    timeout_sec=min(timeout_sec, 120),
+                    temperature=self._resolve_temperature(p["base"], p["model"], for_ping=False),
+                )
+                self._emit_trace(
+                    slot=slot,
+                    provider_name=p.get("name") or slot,
+                    model=p.get("model") or "",
+                    system=repair_system,
+                    user=repair_user,
+                    response_text=repaired,
+                )
+                parsed = self.safe_json(repaired)
+                if self._looks_like_error_payload(parsed):
+                    raise RuntimeError("invalid_json_payload_after_repair")
+                return parsed
         except Exception as e:
             self._emit_trace(
                 slot=slot,
@@ -229,21 +387,21 @@ class ModelRouter:
             raise RuntimeError(
                 f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
             ) from e
-
     def ping_slot(self, slot: str, system: str = "", user: str = "ping") -> str:
         p = self.providers.get(slot)
         if not p:
             raise RuntimeError(f"Unknown provider slot: {slot}")
 
         try:
+            ping_system = system if isinstance(system, str) and system.strip() else "You are a helpful assistant."
             content = self._chat(
                 base=p["base"],
                 key=p["key"],
                 model=p["model"],
-                system=system,
+                system=ping_system,
                 user=user,
-                timeout_sec=p["timeout_sec"],
-                temperature=0,
+                timeout_sec=self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=True),
+                temperature=self._resolve_temperature(p["base"], p["model"], for_ping=True),
             )
             text = (content or "").strip()
             if not text:
@@ -308,3 +466,4 @@ class ModelRouter:
 
     def minimax(self, system: str, user: str) -> dict[str, Any]:
         return self.secondary(system, user)
+

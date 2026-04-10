@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -32,7 +33,32 @@ CACHE_ROOT = Path(__file__).resolve().parents[4] / "data" / "cache"
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def _parse_paper(paper: dict[str, Any]) -> tuple[str, dict[str, str], list[dict[str, str]]]:
+def _merge_report_for_display(
+    *,
+    draft: dict[str, Any] | None = None,
+    review: dict[str, Any] | None = None,
+    final: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    base = final or draft
+    if not isinstance(base, dict):
+        return None
+
+    source_type = (base.get("paper_meta") or {}).get("source_type", "url") if isinstance(base, dict) else "url"
+    merged = normalize_report(base, source_type=source_type)
+
+    if isinstance(review, dict):
+        review_qa = (review.get("reading_qa") or {}) if isinstance(review.get("reading_qa"), dict) else {}
+        merged["reading_qa"] = {
+            **merged.get("reading_qa", {}),
+            **{k: v for k, v in review_qa.items() if str(v or "").strip()},
+        }
+        merged["evidence_refs"] = list(merged.get("evidence_refs", [])) + list(review.get("evidence_refs", []) or [])
+        merged["change_log"] = list(merged.get("change_log", [])) + list(review.get("change_log", []) or [])
+
+    return normalize_report(merged, source_type=source_type)
+
+
+def _parse_paper(paper: dict[str, Any], mode: str = "deep") -> tuple[str, dict[str, str], list[dict[str, str]]]:
     if paper.get("source_type") == "upload":
         parsed = parse_pdf_file(paper["local_pdf_path"])
     else:
@@ -42,7 +68,10 @@ def _parse_paper(paper: dict[str, Any]) -> tuple[str, dict[str, str], list[dict[
     text = parsed.get("text", "") or ""
     status = parsed.get("status", "failed")
     sections = split_sections(text)
-    chunks = top_chunks(sections)
+    if mode == "full":
+        chunks = [{"section": title, "content": content} for title, content in sections.items() if content.strip()]
+    else:
+        chunks = top_chunks(sections)
 
     if not text.strip():
         chunks = [{"section": "ABSTRACT", "content": "No full text extracted. Use summary mode."}]
@@ -83,6 +112,13 @@ def _validate_one_provider(router: ModelRouter, slot: str) -> dict[str, Any]:
         }
 
 
+def _json_len(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    except Exception:
+        return len(str(value))
+
+
 @router.post("/validate-models")
 def validate_models(req: ValidateModelsRequest):
     cfg = req.llm_config.model_dump() if req.llm_config else None
@@ -107,8 +143,9 @@ def analyze(req: AnalyzeRequest):
 
     run = create_run(paper_id=req.paper_id, mode=req.mode)
 
+    stage_start = perf_counter()
     try:
-        parse_status, sections, chunks = _parse_paper(paper)
+        parse_status, sections, chunks = _parse_paper(paper, req.mode)
         cfg = req.llm_config.model_dump() if req.llm_config else None
         draft = generate_draft(
             chunks=chunks,
@@ -122,16 +159,45 @@ def analyze(req: AnalyzeRequest):
         update_run_status(run["id"], "failed")
         raise HTTPException(status_code=500, detail=f"analyze failed: {e}") from e
 
+    input_chars = _json_len({"chunks": chunks, "source_type": paper.get("source_type", "url")})
+    output_chars = _json_len(draft)
+    elapsed_ms = int((perf_counter() - stage_start) * 1000)
+    stage_metrics = {
+        "stage": "analyze",
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "elapsed_ms": elapsed_ms,
+    }
+
     warnings: list[str] = []
+    if chunks:
+        section_names = [str(item.get("section", "")) for item in chunks if str(item.get("section", "")).strip()]
+        total_chars = sum(len(str(item.get("content", ""))) for item in chunks)
+        warnings.append(
+            f"chunk_selection: sections={len(section_names)} total_chars={total_chars} names={section_names}"
+        )
+    warnings.append(
+        f"stage_metric: analyze input_chars={input_chars} output_chars={output_chars} elapsed_ms={elapsed_ms}"
+    )
     if parse_status in {"failed", "summary_only"}:
         warnings.append(f"parse_status={parse_status}")
     if isinstance(draft, dict):
         for line in draft.get("change_log", []):
             if isinstance(line, str) and "模型调用失败" in line:
                 warnings.append(line)
-        for issue in get_requirement_issues(draft):
-            warnings.append(f"report_requirement: {issue}")
-    return {"run_id": run["id"], "paper_id": req.paper_id, "parse_status": parse_status, "warnings": warnings}
+        issues = get_requirement_issues(draft)
+        if issues:
+            warnings.append(
+                f"report_requirement: 阶段1草稿存在 {len(issues)} 项未达标（属于后续 review/finalize 可补全项）"
+            )
+
+    return {
+        "run_id": run["id"],
+        "paper_id": req.paper_id,
+        "parse_status": parse_status,
+        "warnings": warnings,
+        "stage_metrics": stage_metrics,
+    }
 
 
 @router.post("/review")
@@ -148,6 +214,7 @@ def review(req: ReviewRequest):
     parse_data = get_latest_parse(req.paper_id)
     chunks = top_chunks(parse_data["section_index"]) if parse_data else []
 
+    stage_start = perf_counter()
     try:
         cfg = req.llm_config.model_dump() if req.llm_config else None
         review_data = review_draft(
@@ -160,7 +227,26 @@ def review(req: ReviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"review failed: {e}") from e
 
-    return {"run_id": run["id"], "paper_id": req.paper_id, "reviewed": True}
+    input_chars = _json_len({"draft": draft, "chunks": chunks})
+    output_chars = _json_len(review_data)
+    elapsed_ms = int((perf_counter() - stage_start) * 1000)
+    stage_metrics = {
+        "stage": "review",
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "elapsed_ms": elapsed_ms,
+    }
+    warnings = [
+        f"stage_metric: review input_chars={input_chars} output_chars={output_chars} elapsed_ms={elapsed_ms}"
+    ]
+
+    return {
+        "run_id": run["id"],
+        "paper_id": req.paper_id,
+        "reviewed": True,
+        "warnings": warnings,
+        "stage_metrics": stage_metrics,
+    }
 
 
 @router.post("/finalize")
@@ -175,11 +261,21 @@ def finalize(req: FinalizeRequest):
     if not draft:
         raise HTTPException(status_code=400, detail="draft not found")
 
+    parse_data = get_latest_parse(req.paper_id)
+    section_index = parse_data["section_index"] if parse_data else {}
+    chunks = top_chunks(section_index) if section_index else []
+    finalize_context = {
+        "section_index": section_index,
+        "chunks": chunks,
+    }
+
+    stage_start = perf_counter()
     try:
         cfg = req.llm_config.model_dump() if req.llm_config else None
         final = patch_draft(
             draft=draft,
             review=review,
+            context=finalize_context,
             strict=req.strict,
             model_config=cfg,
             trace_hook=lambda item: append_llm_trace(run_id=run["id"], **item),
@@ -188,7 +284,26 @@ def finalize(req: FinalizeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"finalize failed: {e}") from e
 
-    return {"run_id": run["id"], "paper_id": req.paper_id, "finalized": True}
+    input_chars = _json_len({"draft": draft, "review": review, "context": finalize_context, "strict": req.strict})
+    output_chars = _json_len(final)
+    elapsed_ms = int((perf_counter() - stage_start) * 1000)
+    stage_metrics = {
+        "stage": "finalize",
+        "input_chars": input_chars,
+        "output_chars": output_chars,
+        "elapsed_ms": elapsed_ms,
+    }
+    warnings = [
+        f"stage_metric: finalize input_chars={input_chars} output_chars={output_chars} elapsed_ms={elapsed_ms}"
+    ]
+
+    return {
+        "run_id": run["id"],
+        "paper_id": req.paper_id,
+        "finalized": True,
+        "warnings": warnings,
+        "stage_metrics": stage_metrics,
+    }
 
 
 @router.get("/report/{paper_id}")
@@ -200,12 +315,15 @@ def report(paper_id: str):
 
     final = outputs.get("final_json")
     draft = outputs.get("draft_json")
+    review = outputs.get("review_json")
     if final:
-        source_type = (final.get("paper_meta") or {}).get("source_type", "url") if isinstance(final, dict) else "url"
-        return normalize_report(final, source_type=source_type)
+        merged = _merge_report_for_display(draft=draft, review=review, final=final)
+        if merged:
+            return merged
     if draft:
-        source_type = (draft.get("paper_meta") or {}).get("source_type", "url") if isinstance(draft, dict) else "url"
-        return normalize_report(draft, source_type=source_type)
+        merged = _merge_report_for_display(draft=draft, review=review, final=None)
+        if merged:
+            return merged
     raise HTTPException(status_code=404, detail="no report data")
 
 
@@ -223,4 +341,3 @@ def trace(paper_id: str):
         "status": run["status"],
         "traces": get_llm_traces(run["id"]),
     }
-

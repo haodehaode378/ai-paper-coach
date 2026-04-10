@@ -247,6 +247,7 @@
       const teach = report.teach_classmate || {};
       const repro = report.reproduction_guide || {};
       const readingQa = report.reading_qa || {};
+      const evidenceRefs = Array.isArray(report.evidence_refs) ? report.evidence_refs : [];
 
       const reproTotal =
         textLen(repro.environment || '') +
@@ -257,11 +258,12 @@
         textLen(repro.common_errors || []);
 
       const checks = [
-        { key: 'three_minute_summary.problem', min: 700, actual: textLen(summary.problem || '') },
+        { key: 'three_minute_summary.problem', min: 1000, actual: textLen(summary.problem || '') },
         { key: 'teach_classmate.elevator_30s', min: 1, actual: textLen(teach.elevator_30s || '') },
-        { key: 'teach_classmate.classroom_3min', min: 1, actual: textLen(teach.classroom_3min || '') },
-        { key: 'teach_classmate.analogy', min: 180, actual: textLen(teach.analogy || '') },
-        { key: 'reproduction_guide.total', min: 350, actual: reproTotal }
+        { key: 'teach_classmate.classroom_3min', min: 300, actual: textLen(teach.classroom_3min || '') },
+        { key: 'teach_classmate.analogy', min: 260, actual: textLen(teach.analogy || '') },
+        { key: 'reproduction_guide.total', min: 1000, actual: reproTotal },
+        { key: 'evidence_refs.count', min: 12, actual: evidenceRefs.length }
       ];
 
       const qaKeys = [
@@ -274,7 +276,7 @@
         'q7_contribution_and_next_step'
       ];
       for (const key of qaKeys) {
-        checks.push({ key: `reading_qa.${key}`, min: 120, actual: textLen(readingQa[key] || '') });
+        checks.push({ key: `reading_qa.${key}`, min: 700, actual: textLen(readingQa[key] || '') });
       }
       return checks.map(item => ({ ...item, ok: item.actual >= item.min }));
     }
@@ -307,6 +309,7 @@
       const teach = report.teach_classmate || {};
       const repro = report.reproduction_guide || {};
       const readingQa = report.reading_qa || {};
+      const evidenceRefs = Array.isArray(report.evidence_refs) ? report.evidence_refs : [];
       const requirementChecks = buildRequirementChecks(report);
 
       paperMetaLineEl.textContent = `Paper ID: ${paperId}  标题: ${meta.title || '未命名论文'}`;
@@ -378,6 +381,9 @@
   </script>
 </body>
 </html>
+
+
+
 
 
 

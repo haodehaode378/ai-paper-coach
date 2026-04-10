@@ -47,7 +47,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 def main() -> int:
     _preflight()
     python_exe = _python_exe()
-    reload_enabled = _truthy_env("APC_RELOAD", "0")
+    reload_enabled = _truthy_env("APC_RELOAD", "1")
 
     api_cmd = [
         python_exe,
@@ -73,7 +73,7 @@ def main() -> int:
     ]
 
     print("[1/3] Starting API server on http://127.0.0.1:8000")
-    print(f"      Reload mode: {'ON' if reload_enabled else 'OFF'} (set APC_RELOAD=1 to enable)")
+    print(f"      Reload mode: {'ON' if reload_enabled else 'OFF'} (set APC_RELOAD=0 to disable)")
     api_proc = subprocess.Popen(api_cmd, cwd=str(API_DIR))
 
     print("[2/3] Starting web static server on http://127.0.0.1:5500")

@@ -9,3 +9,6 @@ venv/
 *.log
 .DS_Store
 Thumbs.db
+data/cache/
+data/uploads/
+services/data/*.db
