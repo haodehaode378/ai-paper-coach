@@ -1,13 +1,14 @@
-﻿import os
+import os
+import shutil
 import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
 API_DIR = ROOT / "services" / "api"
+WEB_DIR = ROOT / "apps" / "web"
 WEB_PORT = 5500
 API_PORT = 8000
 
@@ -24,7 +25,11 @@ def _check_dependency(name: str) -> bool:
         return False
 
 
-def _preflight() -> None:
+def _find_npm() -> str | None:
+    return shutil.which("npm") or shutil.which("npm.cmd")
+
+
+def _preflight() -> str:
     required = ["fastapi", "uvicorn", "requests"]
     missing = [name for name in required if not _check_dependency(name)]
     if missing:
@@ -38,6 +43,18 @@ def _preflight() -> None:
         print("PDF full-text extraction will fail until one of them is available.")
         print(rf"Run: cd {API_DIR} && pip install -r requirements.txt")
 
+    npm_cmd = _find_npm()
+    if not npm_cmd:
+        print("Missing npm. Install Node.js 18+ to run the Vue frontend.")
+        raise SystemExit(1)
+
+    if not (WEB_DIR / "node_modules").exists():
+        print("Missing frontend dependencies.")
+        print(rf"Run: cd {WEB_DIR} && npm install")
+        raise SystemExit(1)
+
+    return npm_cmd
+
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     value = os.getenv(name, default).strip().lower()
@@ -45,7 +62,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def main() -> int:
-    _preflight()
+    npm_cmd = _preflight()
     python_exe = _python_exe()
     reload_enabled = _truthy_env("APC_RELOAD", "1")
 
@@ -64,25 +81,31 @@ def main() -> int:
         api_cmd.append("--reload")
 
     web_cmd = [
-        python_exe,
-        "-m",
-        "http.server",
-        str(WEB_PORT),
-        "--bind",
+        npm_cmd,
+        "run",
+        "dev",
+        "--",
+        "--host",
         "127.0.0.1",
+        "--port",
+        str(WEB_PORT),
     ]
 
     print("[1/3] Starting API server on http://127.0.0.1:8000")
     print(f"      Reload mode: {'ON' if reload_enabled else 'OFF'} (set APC_RELOAD=0 to disable)")
     api_proc = subprocess.Popen(api_cmd, cwd=str(API_DIR))
 
-    print("[2/3] Starting web static server on http://127.0.0.1:5500")
-    web_proc = subprocess.Popen(web_cmd, cwd=str(ROOT))
+    print(f"[2/3] Starting Vue dev server on http://127.0.0.1:{WEB_PORT}")
+    try:
+        web_proc = subprocess.Popen(web_cmd, cwd=str(WEB_DIR))
+    except Exception:
+        if api_proc.poll() is None:
+            api_proc.terminate()
+        raise
 
-    url = f"http://127.0.0.1:{WEB_PORT}/apps/web/index.html"
-    time.sleep(2)
-    print(f"[3/3] Opening browser: {url}")
-    webbrowser.open(url)
+    url = f"http://127.0.0.1:{WEB_PORT}"
+    time.sleep(3)
+    print(f"[3/3] Frontend ready: {url}")
 
     print("\nPress Ctrl+C to stop both servers.")
     try:
