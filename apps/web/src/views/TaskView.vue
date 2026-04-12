@@ -40,22 +40,11 @@ const { traces, traceError, startPolling, stopPolling } = useTraceHistory({
 })
 
 const pipelineSteps = computed(() => [
-  { key: 'ingest', label: 'Ingest', done: stageState.value.ingest },
-  { key: 'analyze', label: 'Analyze', done: stageState.value.analyze },
-  { key: 'review', label: 'Review', done: stageState.value.review },
-  { key: 'finalize', label: 'Finalize', done: stageState.value.finalize }
+  { key: 'ingest', label: '导入', done: stageState.value.ingest },
+  { key: 'analyze', label: '分析', done: stageState.value.analyze },
+  { key: 'review', label: '审阅', done: stageState.value.review },
+  { key: 'finalize', label: '整理', done: stageState.value.finalize }
 ])
-
-const configSummary = computed(() => {
-  const modelConfig = buildModelConfig(form.value)
-  return [
-    { label: 'API', value: form.value.apiBase },
-    { label: 'Mode', value: form.value.runMode || 'deep' },
-    { label: 'Model A', value: modelConfig.primary.model },
-    { label: 'Model B', value: modelConfig.secondary.model },
-    { label: 'Paper ID', value: currentPaperId.value || '-' }
-  ]
-})
 
 function resetStageState() {
   stageState.value = { ingest: false, analyze: false, review: false, finalize: false }
@@ -66,7 +55,7 @@ async function loadHistoryRecords() {
     const data = await callApi(form.value.apiBase, '/history')
     historyRecords.value = Array.isArray(data.items) ? data.items : []
   } catch (error) {
-    addStatus(`History load failed: ${error.message}`)
+    addStatus(`历史记录加载失败：${error.message}`)
   }
 }
 
@@ -88,18 +77,18 @@ function setPaperId(paperId) {
 
 function handleSaveConfig() {
   saveModelConfig(form.value)
-  addStatus('Model configuration saved to local storage.')
+  addStatus('模型配置已保存到本地。')
 }
 
 function handleClearConfig() {
   const next = clearModelConfig()
   form.value = { ...defaultFormState(), ...next, apiBase: form.value.apiBase }
-  addStatus('Model configuration cleared from local storage.')
+  addStatus('模型配置已从本地清除。')
 }
 
 async function handleValidateConfig() {
   try {
-    addStatus('Validating model APIs ...')
+    addStatus('开始校验模型接口配置...')
     const data = await callApi(form.value.apiBase, '/validate-models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -109,39 +98,33 @@ async function handleValidateConfig() {
     if (Array.isArray(data.results)) {
       for (const item of data.results) {
         if (item.ok) {
-          addStatus(`Validation passed: ${item.display_name || item.provider} (${item.latency_ms} ms)`) 
+          addStatus(`校验通过：${item.display_name || item.provider}（${item.latency_ms} ms）`)
         } else {
-          addStatus(`Validation failed: ${item.display_name || item.provider} - ${item.error || 'unknown error'}`)
+          addStatus(`校验失败：${item.display_name || item.provider} - ${item.error || '未知错误'}`)
         }
       }
     }
 
-    addStatus(data.ok ? 'API validation finished successfully.' : 'API validation finished with failures.')
+    addStatus(data.ok ? '接口校验完成，全部通过。' : '接口校验完成，存在失败项。')
   } catch (error) {
-    addStatus(`API validation request failed: ${error.message}`)
+    addStatus(`接口校验请求失败：${error.message}`)
   }
 }
 
 async function ingest() {
   const url = String(form.value.paperUrl || '').trim()
   if (!url && !paperFile.value) {
-    throw new Error('Provide a paper URL or upload a PDF file.')
+    throw new Error('请提供论文链接或上传 PDF 文件。')
   }
 
-  addStatus('Importing paper input ...')
+  addStatus('正在导入论文输入...')
 
   let payload
   if (paperFile.value) {
     const formData = new FormData()
     formData.append('file', paperFile.value)
-    if (url) {
-      formData.append('url', url)
-    }
-
-    payload = await callApi(form.value.apiBase, '/ingest', {
-      method: 'POST',
-      body: formData
-    })
+    if (url) formData.append('url', url)
+    payload = await callApi(form.value.apiBase, '/ingest', { method: 'POST', body: formData })
   } else {
     payload = await callApi(form.value.apiBase, '/ingest', {
       method: 'POST',
@@ -151,78 +134,56 @@ async function ingest() {
   }
 
   const paperId = payload.paper_id || payload.id || payload.paperId
-  if (!paperId) {
-    throw new Error('Ingest completed but the API did not return paper_id.')
-  }
+  if (!paperId) throw new Error('导入成功，但后端没有返回 paper_id。')
 
   setPaperId(paperId)
   stageState.value.ingest = true
   startPolling()
-  addStatus(`Ingest complete: paper_id=${paperId}`)
+  addStatus(`导入完成：paper_id=${paperId}`)
   return paperId
 }
 
 function emitStageMessages(data, fallbackStage) {
-  if (Array.isArray(data?.warnings)) {
-    data.warnings.forEach((warning) => addStatus(`Warning: ${warning}`))
-  }
-
+  if (Array.isArray(data?.warnings)) data.warnings.forEach((warning) => addStatus(`提示：${warning}`))
   if (data?.stage_metrics) {
     const metrics = data.stage_metrics
-    addStatus(
-      `Stage metrics: ${metrics.stage || fallbackStage || '-'} input=${Number(metrics.input_chars || 0)} output=${Number(metrics.output_chars || 0)} elapsed=${Number(metrics.elapsed_ms || 0)} ms`
-    )
+    addStatus(`阶段指标：${metrics.stage || fallbackStage || '-'} 输入=${Number(metrics.input_chars || 0)} 输出=${Number(metrics.output_chars || 0)} 耗时=${Number(metrics.elapsed_ms || 0)} ms`)
   }
 }
 
 async function runAnalyze(paperId, mode, modelConfig) {
-  addStatus(`Running analyze stage (${mode}) ...`)
-  const data = await callApi(
-    form.value.apiBase,
-    '/analyze',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
-    },
-    TIMEOUT_ANALYZE_MS
-  )
+  addStatus(`开始执行分析阶段（${mode}）...`)
+  const data = await callApi(form.value.apiBase, '/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
+  }, TIMEOUT_ANALYZE_MS)
   stageState.value.analyze = true
-  addStatus('Analyze stage complete.')
+  addStatus('分析阶段完成。')
   emitStageMessages(data, 'analyze')
 }
 
 async function runReview(paperId, modelConfig) {
-  addStatus('Running review stage ...')
-  const data = await callApi(
-    form.value.apiBase,
-    '/review',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
-    },
-    TIMEOUT_REVIEW_MS
-  )
+  addStatus('开始执行审阅阶段...')
+  const data = await callApi(form.value.apiBase, '/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
+  }, TIMEOUT_REVIEW_MS)
   stageState.value.review = true
-  addStatus('Review stage complete.')
+  addStatus('审阅阶段完成。')
   emitStageMessages(data, 'review')
 }
 
 async function runFinalize(paperId, mode, modelConfig) {
-  addStatus('Running finalize stage ...')
-  const data = await callApi(
-    form.value.apiBase,
-    '/finalize',
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
-    },
-    TIMEOUT_FINALIZE_MS
-  )
+  addStatus('开始执行整理阶段...')
+  const data = await callApi(form.value.apiBase, '/finalize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
+  }, TIMEOUT_FINALIZE_MS)
   stageState.value.finalize = true
-  addStatus('Finalize stage complete.')
+  addStatus('整理阶段完成。')
   emitStageMessages(data, 'finalize')
 }
 
@@ -235,7 +196,7 @@ async function runPipeline() {
 
     const mode = form.value.runMode || 'deep'
     const modelConfig = currentModelConfig()
-    addStatus(`Pipeline configuration: Model A=${modelConfig.primary.model} | Model B=${modelConfig.secondary.model} | mode=${mode}`)
+    addStatus(`本次配置：模型 A=${modelConfig.primary.model} | 模型 B=${modelConfig.secondary.model} | 模式=${mode}`)
 
     const paperId = await ingest()
     await runAnalyze(paperId, mode, modelConfig)
@@ -252,14 +213,13 @@ async function runPipeline() {
   } catch (error) {
     if (isTimeoutError(error) && currentPaperId.value) {
       addStatus(error.message)
-      addStatus('The backend may still be processing. Redirecting to the report reader.')
+      addStatus('后端可能仍在处理中，正在跳转到结果页继续查看。')
       saveLastResult({ paper_id: currentPaperId.value, api_base: form.value.apiBase })
       await router.push({ name: 'results', query: { paper_id: currentPaperId.value, api_base: form.value.apiBase } })
       return
     }
-
     stopPolling()
-    addStatus(`Error: ${error.message}`)
+    addStatus(`错误：${error.message}`)
   } finally {
     isRunning.value = false
   }
@@ -267,7 +227,7 @@ async function runPipeline() {
 
 onMounted(() => {
   loadHistoryRecords()
-  addStatus('Console ready. Start a task or open a saved record.')
+  addStatus('控制台已就绪，可以开始新任务或打开历史记录。')
 })
 </script>
 
@@ -275,17 +235,17 @@ onMounted(() => {
   <div class="workspace-shell">
     <header class="topbar">
       <div class="brand-block">
-        <p class="eyebrow">Research Runtime Console</p>
-        <h1>AI Paper Coach</h1>
+        <p class="eyebrow">研究运行控制台</p>
+        <h1>AI 论文教练</h1>
       </div>
-      <div class="topbar-search">Search papers, records, and file assets</div>
+      <div class="topbar-search">搜索论文、历史记录和本地文件资源</div>
       <div class="topbar-actions">
         <span class="status-pill" :class="isRunning ? 'status-pill-live' : 'status-pill-idle'">
-          {{ isRunning ? 'Pipeline running' : 'System idle' }}
+          {{ isRunning ? '任务运行中' : '系统待命' }}
         </span>
-        <button class="button button-secondary" @click="handleValidateConfig">Validate APIs</button>
+        <button class="button button-secondary" @click="handleValidateConfig">检测接口</button>
         <button class="button button-primary" :disabled="isRunning" @click="runPipeline">
-          {{ isRunning ? 'Running ...' : 'Start Run' }}
+          {{ isRunning ? '运行中...' : '开始运行' }}
         </button>
       </div>
     </header>
@@ -293,20 +253,20 @@ onMounted(() => {
     <div class="workspace-grid">
       <aside class="workspace-sidebar">
         <section class="sidebar-section">
-          <p class="sidebar-title">Navigation</p>
+          <p class="sidebar-title">导航</p>
           <div class="nav-list">
-            <RouterLink class="nav-item nav-item-active" :to="{ name: 'task' }">Console</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'history', query: { api_base: form.apiBase } }">History</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'saved', query: { api_base: form.apiBase } }">Saved Reports</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'uploads', query: { api_base: form.apiBase } }">Uploads</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'cache', query: { api_base: form.apiBase } }">Cache</RouterLink>
+            <RouterLink class="nav-item nav-item-active" :to="{ name: 'task' }">控制台</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'history', query: { api_base: form.apiBase } }">历史记录</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'saved', query: { api_base: form.apiBase } }">已保存报告</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'uploads', query: { api_base: form.apiBase } }">上传文件</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'cache', query: { api_base: form.apiBase } }">缓存资源</RouterLink>
           </div>
         </section>
 
         <section class="sidebar-section">
           <div class="section-row">
-            <p class="sidebar-title">Recent History</p>
-            <span class="sidebar-meta">{{ historyRecords.length }} items</span>
+            <p class="sidebar-title">最近历史</p>
+            <span class="sidebar-meta">{{ historyRecords.length }} 条</span>
           </div>
           <div class="history-list">
             <button v-for="item in historyRecords" :key="item.record_id" class="history-item button-plain" @click="openHistoryRecord(item.record_id)">
@@ -316,7 +276,7 @@ onMounted(() => {
               </div>
               <span class="history-dot"></span>
             </button>
-            <div v-if="!historyRecords.length" class="history-empty">No history records yet.</div>
+            <div v-if="!historyRecords.length" class="history-empty">还没有历史记录。</div>
           </div>
         </section>
       </aside>
@@ -324,22 +284,22 @@ onMounted(() => {
       <main class="workspace-main">
         <section class="hero-panel panel-soft">
           <div>
-            <p class="eyebrow">Current Session</p>
-            <h2>Paper Control Console</h2>
-            <p class="panel-subtitle">Import a paper, configure both models, run the pipeline, and keep each result in local history.</p>
+            <p class="eyebrow">当前会话</p>
+            <h2>论文控制台</h2>
+            <p class="panel-subtitle">导入论文、配置双模型、执行完整流水线，并把每次结果保存到本地历史中。</p>
           </div>
           <div class="hero-meta-grid">
             <div>
-              <span class="meta-label">Current Paper ID</span>
+              <span class="meta-label">当前论文 ID</span>
               <strong>{{ currentPaperId || '-' }}</strong>
             </div>
             <div>
-              <span class="meta-label">Run Mode</span>
+              <span class="meta-label">运行模式</span>
               <strong>{{ form.runMode || 'deep' }}</strong>
             </div>
             <div>
-              <span class="meta-label">Input Source</span>
-              <strong>{{ paperFile ? 'Uploaded PDF' : (form.paperUrl ? 'Remote URL' : 'Not selected') }}</strong>
+              <span class="meta-label">输入来源</span>
+              <strong>{{ paperFile ? '上传 PDF' : (form.paperUrl ? '远程链接' : '未选择') }}</strong>
             </div>
           </div>
         </section>
@@ -347,13 +307,13 @@ onMounted(() => {
         <section class="panel-soft">
           <div class="section-row">
             <div>
-              <p class="eyebrow">Pipeline</p>
-              <h3>Stage Progress</h3>
+              <p class="eyebrow">流水线</p>
+              <h3>阶段进度</h3>
             </div>
           </div>
           <div class="pipeline-row">
             <div v-for="step in pipelineSteps" :key="step.key" class="pipeline-step" :class="{ 'pipeline-step-done': step.done }">
-              <span class="pipeline-badge">{{ step.done ? 'Done' : 'Pending' }}</span>
+              <span class="pipeline-badge">{{ step.done ? '已完成' : '待执行' }}</span>
               <strong>{{ step.label }}</strong>
             </div>
           </div>
@@ -362,29 +322,29 @@ onMounted(() => {
         <section class="panel-soft">
           <div class="section-row">
             <div>
-              <p class="eyebrow">Task Intake</p>
-              <h3>Run Input</h3>
+              <p class="eyebrow">任务输入</p>
+              <h3>运行参数</h3>
             </div>
           </div>
           <div class="form-grid control-grid">
             <label class="field span-two">
-              <span>API Base URL</span>
+              <span>后端接口地址</span>
               <input v-model="form.apiBase" autocomplete="off" />
             </label>
             <label class="field span-two">
-              <span>Paper URL</span>
-              <input v-model="form.paperUrl" placeholder="arXiv URL or direct PDF URL" autocomplete="off" />
+              <span>论文链接</span>
+              <input v-model="form.paperUrl" placeholder="arXiv 链接或直接 PDF 链接" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Upload PDF</span>
+              <span>上传 PDF</span>
               <input type="file" accept="application/pdf" @change="onFileChange" />
             </label>
             <label class="field">
-              <span>Run Mode</span>
+              <span>运行模式</span>
               <select v-model="form.runMode">
-                <option value="deep">Deep read</option>
-                <option value="full">Full pass</option>
-                <option value="fast">Fast pass</option>
+                <option value="deep">精读模式</option>
+                <option value="full">全量模式</option>
+                <option value="fast">快速模式</option>
               </select>
             </label>
           </div>
@@ -395,67 +355,52 @@ onMounted(() => {
         <section class="panel-soft detail-panel">
           <div class="section-row">
             <div>
-              <p class="eyebrow">Runtime Config</p>
-              <h3>Models and Keys</h3>
+              <p class="eyebrow">运行配置</p>
+              <h3>模型与密钥</h3>
             </div>
           </div>
-
           <div class="detail-stack">
             <label class="field">
-              <span>Model A Base URL</span>
+              <span>模型 A 接口地址</span>
               <input v-model="form.qwenBase" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Model A Key</span>
+              <span>模型 A 密钥</span>
               <input v-model="form.qwenKey" type="password" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Model A Name</span>
+              <span>模型 A 名称</span>
               <input v-model="form.qwenModel" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Model B Base URL</span>
+              <span>模型 B 接口地址</span>
               <input v-model="form.minimaxBase" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Model B Key</span>
+              <span>模型 B 密钥</span>
               <input v-model="form.minimaxKey" type="password" autocomplete="off" />
             </label>
             <label class="field">
-              <span>Model B Name</span>
+              <span>模型 B 名称</span>
               <input v-model="form.minimaxModel" autocomplete="off" />
             </label>
           </div>
-
           <div class="button-column">
-            <button class="button button-secondary" @click="handleSaveConfig">Save Config</button>
-            <button class="button button-secondary" @click="handleClearConfig">Clear Config</button>
-          </div>
-        </section>
-
-        <section class="panel-soft detail-panel">
-          <div class="section-row">
-            <div>
-              <p class="eyebrow">Snapshot</p>
-              <h3>Current Summary</h3>
-            </div>
-          </div>
-          <div class="summary-list">
-            <div v-for="item in configSummary" :key="item.label" class="summary-row">
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}</strong>
-            </div>
+            <button class="button button-secondary" @click="handleSaveConfig">保存配置</button>
+            <button class="button button-secondary" @click="handleClearConfig">清空配置</button>
           </div>
         </section>
       </aside>
     </div>
 
-    <RunDiagnosticsPanel
-      :statuses="statuses"
-      :traces="traces"
-      :trace-error="traceError"
-      :compact="true"
-      empty-trace-message="Trace records appear here once the task starts running."
-    />
+    <div class="workspace-wide-panel">
+      <RunDiagnosticsPanel
+        :statuses="statuses"
+        :traces="traces"
+        :trace-error="traceError"
+        :compact="true"
+        empty-trace-message="任务开始后，这里会显示调用轨迹和日志。"
+      />
+    </div>
   </div>
 </template>

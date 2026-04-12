@@ -14,3 +14,4 @@ data/uploads/
 services/data/*.db
 apps/web/dist/
 apps/web/node_modules/
+services/data/history/
