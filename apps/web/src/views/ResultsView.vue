@@ -1,6 +1,6 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import RunDiagnosticsPanel from '../components/RunDiagnosticsPanel.vue'
 import { callApi } from '../lib/api'
@@ -8,25 +8,22 @@ import { loadLastResult } from '../lib/storage'
 import { useTraceHistory } from '../composables/useTraceHistory'
 
 const route = useRoute()
+const router = useRouter()
 const statuses = ref([])
 const report = ref(null)
 const reportError = ref('')
 const loading = ref(false)
 const paperId = ref('')
 const apiBase = ref('')
+const historyRecords = ref([])
+const activeRecordId = ref('')
 
 function addStatus(message) {
   const timestamp = new Date().toLocaleTimeString()
   statuses.value.unshift(`${timestamp} - ${message}`)
 }
 
-const {
-  traces,
-  traceError,
-  startPolling,
-  stopPolling,
-  fetchTraces
-} = useTraceHistory({
+const { traces, traceError, startPolling, stopPolling, fetchTraces } = useTraceHistory({
   paperIdRef: paperId,
   apiBaseRef: apiBase,
   addStatus
@@ -45,21 +42,26 @@ function asArray(value) {
 }
 
 const context = computed(() => {
+  const querySavedId = route.query.saved_id
+  const queryRecordId = route.query.record_id
   const queryPaperId = route.query.paper_id
   const queryApiBase = route.query.api_base
+  if (querySavedId && queryApiBase) {
+    return { saved_id: String(querySavedId), api_base: String(queryApiBase) }
+  }
+  if (queryRecordId && queryApiBase) {
+    return { record_id: String(queryRecordId), api_base: String(queryApiBase) }
+  }
   if (queryPaperId && queryApiBase) {
-    return {
-      paper_id: String(queryPaperId),
-      api_base: String(queryApiBase)
-    }
+    return { paper_id: String(queryPaperId), api_base: String(queryApiBase) }
   }
   return loadLastResult()
 })
 
 const paperMetaLine = computed(() => {
-  if (!paperId.value) return '等待载入报告。'
-  const title = report.value?.paper_meta?.title || '未命名论文'
-  return `Paper ID: ${paperId.value}  标题: ${title}`
+  if (!paperId.value) return 'Waiting for a report.'
+  const title = report.value?.paper_meta?.title || 'Untitled paper'
+  return `Paper ID: ${paperId.value} | Title: ${title}`
 })
 
 const requirementChecks = computed(() => {
@@ -85,30 +87,15 @@ const requirementChecks = computed(() => {
   ]
 
   const checks = [
-    {
-      key: 'three_minute_summary.problem',
-      min: 1000,
-      actual: textLen(summary.problem || '')
-    },
-    {
-      key: 'reproduction_guide.total',
-      min: 1000,
-      actual: reproductionTotal
-    }
+    { key: 'three_minute_summary.problem', min: 1000, actual: textLen(summary.problem || '') },
+    { key: 'reproduction_guide.total', min: 1000, actual: reproductionTotal }
   ]
 
   qaKeys.forEach((key) => {
-    checks.push({
-      key: `reading_qa.${key}`,
-      min: 700,
-      actual: textLen(readingQa[key] || '')
-    })
+    checks.push({ key: `reading_qa.${key}`, min: 700, actual: textLen(readingQa[key] || '') })
   })
 
-  return checks.map((item) => ({
-    ...item,
-    ok: item.actual >= item.min
-  }))
+  return checks.map((item) => ({ ...item, ok: item.actual >= item.min }))
 })
 
 const reportSections = computed(() => {
@@ -120,161 +107,263 @@ const reportSections = computed(() => {
 
   return [
     {
-      title: '论文分析（>=1000字）',
+      title: 'Summary',
       blocks: [
-        { label: '正文', type: 'text', value: summary.problem || '-' },
-        { label: '方法要点', type: 'list', value: summary.method_points || [] },
-        { label: '关键结果', type: 'list', value: summary.key_results || [] },
-        { label: '局限性', type: 'list', value: summary.limitations || [] },
-        { label: '适合谁读', type: 'text', value: summary.who_should_read || '-' }
+        { label: 'Paper analysis', type: 'text', value: summary.problem || '-' },
+        { label: 'Method points', type: 'list', value: summary.method_points || [] },
+        { label: 'Key results', type: 'list', value: summary.key_results || [] }
       ]
     },
     {
-      title: '复现指导（>=1000字）',
+      title: 'Reproduction Guide',
       blocks: [
-        { label: '环境', type: 'text', value: reproduction.environment || '-' },
-        { label: '数据集', type: 'text', value: reproduction.dataset || '-' },
-        { label: '命令', type: 'list', value: reproduction.commands || [] },
-        { label: '关键超参数', type: 'list', value: reproduction.key_hyperparams || [] },
-        { label: '预期结果范围', type: 'text', value: reproduction.expected_range || '-' },
-        { label: '常见错误', type: 'list', value: reproduction.common_errors || [] }
+        { label: 'Environment', type: 'text', value: reproduction.environment || '-' },
+        { label: 'Dataset', type: 'text', value: reproduction.dataset || '-' },
+        { label: 'Commands', type: 'list', value: reproduction.commands || [] },
+        { label: 'Key hyperparameters', type: 'list', value: reproduction.key_hyperparams || [] }
       ]
     },
     {
-      title: '七个核心问题（每题>=700字）',
+      title: 'Seven Questions',
       blocks: [
-        { label: '1. 论文试图解决什么问题？这是否是一个新的问题？', type: 'text', value: readingQa.q1_problem_and_novelty || '-' },
-        { label: '2. 有哪些相关研究？如何归类？谁是这一课题在领域内值得关注的研究者（公司）？', type: 'text', value: readingQa.q2_related_work_and_researchers || '-' },
-        { label: '3. 论文中提到的解决方案之关键是什么？', type: 'text', value: readingQa.q3_key_idea || '-' },
-        { label: '4. 论文中的实验是如何设计的？', type: 'text', value: readingQa.q4_experiment_design || '-' },
-        { label: '5. 用于定量评估的数据集是什么？代码有没有开源？', type: 'text', value: readingQa.q5_dataset_and_code || '-' },
-        { label: '6. 文中的实验及结果有没有很好地支持需要验证的科学假设/提出方案？', type: 'text', value: readingQa.q6_support_for_claims || '-' },
-        { label: '7. 这篇论文到底有什么贡献？下一步呢？有什么工作可以继续深入？', type: 'text', value: readingQa.q7_contribution_and_next_step || '-' }
+        { label: 'Question 1', type: 'text', value: readingQa.q1_problem_and_novelty || '-' },
+        { label: 'Question 2', type: 'text', value: readingQa.q2_related_work_and_researchers || '-' },
+        { label: 'Question 3', type: 'text', value: readingQa.q3_key_idea || '-' },
+        { label: 'Question 4', type: 'text', value: readingQa.q4_experiment_design || '-' },
+        { label: 'Question 5', type: 'text', value: readingQa.q5_dataset_and_code || '-' },
+        { label: 'Question 6', type: 'text', value: readingQa.q6_support_for_claims || '-' },
+        { label: 'Question 7', type: 'text', value: readingQa.q7_contribution_and_next_step || '-' }
       ]
     }
   ]
 })
 
-const reportLooksEmpty = computed(() => {
-  const summary = report.value?.three_minute_summary || {}
-  const reproduction = report.value?.reproduction_guide || {}
-  const majorContent =
-    textLen(summary.problem || '') +
-    textLen(reproduction.environment || '') +
-    textLen(reproduction.dataset || '')
-  return majorContent <= 5
-})
+const reportStats = computed(() => [
+  { label: 'State', value: report.value ? 'Loaded' : 'Missing' },
+  { label: 'Requirements', value: requirementChecks.value.every((item) => item.ok) ? 'Pass' : 'Needs work' },
+  { label: 'Trace count', value: `${traces.value.length}` },
+  { label: 'Record ID', value: activeRecordId.value || '-' }
+])
+
+async function loadHistoryRecords() {
+  try {
+    const data = await callApi(apiBase.value || context.value?.api_base || 'http://localhost:8000', '/history')
+    historyRecords.value = Array.isArray(data.items) ? data.items : []
+  } catch (error) {
+    addStatus(`History load failed: ${error.message}`)
+  }
+}
+
+function openHistoryRecord(recordId) {
+  router.push({ name: 'results', query: { record_id: recordId, api_base: apiBase.value || context.value?.api_base || 'http://localhost:8000' } })
+}
+
+async function saveCurrentReport() {
+  if (!activeRecordId.value) {
+    addStatus('No active record to save.')
+    return
+  }
+  try {
+    await callApi(apiBase.value, `/saved/${encodeURIComponent(activeRecordId.value)}`, { method: 'POST' })
+    addStatus(`Saved report ${activeRecordId.value}`)
+  } catch (error) {
+    addStatus(`Save failed: ${error.message}`)
+  }
+}
 
 async function loadReport() {
   reportError.value = ''
   report.value = null
   stopPolling()
 
-  if (!context.value?.paper_id || !context.value?.api_base) {
-    addStatus('未找到可用的 paper_id 或 API 地址，请返回任务页重新提交。')
+  if (!context.value?.api_base) {
+    addStatus('No API base available. Return to the console and run a task again.')
     return
   }
 
-  paperId.value = context.value.paper_id
   apiBase.value = context.value.api_base
   loading.value = true
-  addStatus(`正在拉取 paper_id=${paperId.value} 的报告...`)
 
   try {
-    startPolling()
-    await fetchTraces()
-    report.value = await callApi(apiBase.value, `/report/${encodeURIComponent(paperId.value)}`)
-    addStatus('报告加载完成。')
+    if (context.value.saved_id) {
+      activeRecordId.value = context.value.saved_id
+      addStatus(`Loading saved report ${context.value.saved_id} ...`)
+      const detail = await callApi(apiBase.value, `/saved/${encodeURIComponent(context.value.saved_id)}`)
+      report.value = detail.report || null
+      paperId.value = detail.paper_id || detail.meta?.paper_id || ''
+      addStatus('Saved report loaded.')
+    } else if (context.value.record_id) {
+      activeRecordId.value = context.value.record_id
+      addStatus(`Loading history record ${context.value.record_id} ...`)
+      const detail = await callApi(apiBase.value, `/history/${encodeURIComponent(context.value.record_id)}`)
+      report.value = detail.report || null
+      paperId.value = detail.paper_id || detail.meta?.paper_id || ''
+      addStatus('History record loaded.')
+    } else if (context.value.paper_id) {
+      paperId.value = context.value.paper_id
+      addStatus(`Loading latest report for paper_id=${paperId.value} ...`)
+      startPolling()
+      await fetchTraces()
+      report.value = await callApi(apiBase.value, `/report/${encodeURIComponent(paperId.value)}`)
+      addStatus('Latest report loaded.')
+    } else {
+      addStatus('No paper or record context found.')
+    }
   } catch (error) {
     reportError.value = error.message
-    addStatus(`错误：${error.message}`)
+    addStatus(`Error: ${error.message}`)
   } finally {
     loading.value = false
   }
 }
 
-watch(
-  () => route.fullPath,
-  () => {
-    loadReport()
-  },
-  { immediate: true }
-)
+onMounted(() => {
+  loadHistoryRecords()
+})
+
+watch(() => route.fullPath, loadReport, { immediate: true })
 </script>
 
 <template>
-  <div class="page-shell">
-    <header class="page-header page-header-compact">
-      <div>
-        <p class="eyebrow">Rendered Report</p>
+  <div class="workspace-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <p class="eyebrow">Research Runtime Console</p>
         <h1>AI Paper Coach</h1>
-        <p class="header-note">{{ paperMetaLine }}</p>
       </div>
-      <RouterLink class="button button-secondary" :to="{ name: 'task' }">返回任务页</RouterLink>
+      <div class="topbar-search">History and saved report reader</div>
+      <div class="topbar-actions">
+        <span class="status-pill status-pill-live">Results</span>
+        <RouterLink class="button button-secondary" :to="{ name: 'task' }">Console</RouterLink>
+      </div>
     </header>
 
-    <main class="page-main">
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <h2>结果渲染</h2>
-            <p class="panel-subtitle">报告按结构化字段渲染，不再依赖大块 innerHTML 拼接。</p>
+    <div class="workspace-grid">
+      <aside class="workspace-sidebar">
+        <section class="sidebar-section">
+          <p class="sidebar-title">Navigation</p>
+          <div class="nav-list">
+            <RouterLink class="nav-item" :to="{ name: 'task' }">Console</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'history' }">History</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'saved' }">Saved Reports</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'uploads' }">Uploads</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'cache' }">Cache</RouterLink>
           </div>
-        </div>
+        </section>
 
-        <p v-if="loading" class="empty-state">正在加载报告与 trace 记录...</p>
-        <p v-else-if="reportError" class="error-text">{{ reportError }}</p>
-        <p v-else-if="!report" class="empty-state">还没有可展示的报告。</p>
+        <section class="sidebar-section">
+          <div class="section-row">
+            <p class="sidebar-title">Local History</p>
+            <span class="sidebar-meta">{{ historyRecords.length }} items</span>
+          </div>
+          <div class="history-list">
+            <button v-for="item in historyRecords" :key="item.record_id" class="history-item button-plain" @click="openHistoryRecord(item.record_id)">
+              <div>
+                <strong>{{ item.title }}</strong>
+                <p>{{ item.saved_at || item.status || '-' }}</p>
+              </div>
+              <span class="history-dot"></span>
+            </button>
+            <div v-if="!historyRecords.length" class="history-empty">No history records yet.</div>
+          </div>
+        </section>
+      </aside>
 
-        <div v-else class="report-layout">
-          <section class="report-section">
-            <div class="section-header">
-              <h3>字数校验</h3>
-              <p :class="requirementChecks.every((item) => item.ok) ? 'success-text' : 'error-text'">
-                {{ requirementChecks.every((item) => item.ok) ? '全部达标' : '存在不达标字段' }}
-              </p>
-            </div>
-            <ul class="check-list">
-              <li v-for="item in requirementChecks" :key="item.key">
-                <strong>{{ item.key }}</strong>
-                <span :class="item.ok ? 'success-text' : 'error-text'">{{ item.ok ? '达标' : '不达标' }}</span>
-                <span>({{ item.actual }}/{{ item.min }})</span>
-              </li>
-            </ul>
-          </section>
-
-          <section v-if="reportLooksEmpty" class="report-section report-warning">
-            <h3>提示</h3>
-            <p>当前结果正文为空，通常是模型未配置或调用失败。请先在任务页配置可用模型后重跑流程。</p>
+      <main class="workspace-main">
+        <section class="hero-panel panel-soft">
+          <div>
+            <p class="eyebrow">Record Detail</p>
+            <h2>Report Reader</h2>
+            <p class="panel-subtitle">{{ paperMetaLine }}</p>
+          </div>
+          <div class="hero-meta-grid">
             <div>
-              <strong>最近日志：</strong>
-              <ul class="bullet-list compact-list">
-                <li v-for="status in asArray(statuses.slice(0, 3))" :key="status">{{ status }}</li>
+              <span class="meta-label">Paper ID</span>
+              <strong>{{ paperId || '-' }}</strong>
+            </div>
+            <div>
+              <span class="meta-label">Status</span>
+              <strong>{{ loading ? 'Loading' : (report ? 'Ready' : 'Missing') }}</strong>
+            </div>
+            <div>
+              <span class="meta-label">Record ID</span>
+              <strong>{{ activeRecordId || '-' }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel-soft">
+          <div class="section-row">
+            <div>
+              <p class="eyebrow">Workspace Tabs</p>
+              <h3>Reader</h3>
+            </div>
+            <div class="tab-strip">
+              <span class="tab-pill tab-pill-active">Summary</span>
+              <span class="tab-pill">Reproduction</span>
+              <span class="tab-pill">Q&A</span>
+              <span class="tab-pill">Trace</span>
+            </div>
+          </div>
+
+          <p v-if="loading" class="empty-state">Loading report...</p>
+          <p v-else-if="reportError" class="error-text">{{ reportError }}</p>
+          <p v-else-if="!report" class="empty-state">No report to display.</p>
+
+          <div v-else class="report-layout">
+            <section class="report-section report-section-compact">
+              <div class="section-header">
+                <h3>Requirement Checks</h3>
+                <p :class="requirementChecks.every((item) => item.ok) ? 'success-text' : 'error-text'">
+                  {{ requirementChecks.every((item) => item.ok) ? 'All passed' : 'Some checks failed' }}
+                </p>
+              </div>
+              <ul class="check-list">
+                <li v-for="item in requirementChecks" :key="item.key">
+                  <strong>{{ item.key }}</strong>
+                  <span :class="item.ok ? 'success-text' : 'error-text'">{{ item.ok ? 'pass' : 'fail' }}</span>
+                  <span>({{ item.actual }}/{{ item.min }})</span>
+                </li>
               </ul>
-            </div>
-          </section>
+            </section>
 
-          <section v-for="section in reportSections" :key="section.title" class="report-section">
-            <h3>{{ section.title }}</h3>
-            <div class="report-blocks">
-              <article v-for="block in section.blocks" :key="block.label" class="report-block">
-                <h4>{{ block.label }}</h4>
-                <pre v-if="block.type === 'text'">{{ block.value }}</pre>
-                <ul v-else class="bullet-list">
-                  <li v-for="item in asArray(block.value)" :key="String(item)">{{ item }}</li>
-                </ul>
-              </article>
-            </div>
-          </section>
-        </div>
-      </section>
+            <section v-for="section in reportSections" :key="section.title" class="report-section report-section-compact">
+              <h3>{{ section.title }}</h3>
+              <div class="report-blocks">
+                <article v-for="block in section.blocks" :key="block.label" class="report-block">
+                  <h4>{{ block.label }}</h4>
+                  <pre v-if="block.type === 'text'">{{ block.value }}</pre>
+                  <ul v-else class="bullet-list">
+                    <li v-for="item in asArray(block.value)" :key="String(item)">{{ item }}</li>
+                  </ul>
+                </article>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
 
-      <RunDiagnosticsPanel
-        :statuses="statuses"
-        :traces="traces"
-        :trace-error="traceError"
-        empty-trace-message="等待加载实时讯息。"
-      />
-    </main>
+      <aside class="workspace-detail">
+        <section class="panel-soft detail-panel">
+          <div class="section-row">
+            <div>
+              <p class="eyebrow">Record Snapshot</p>
+              <h3>Summary</h3>
+            </div>
+          </div>
+          <div class="summary-list">
+            <div v-for="item in reportStats" :key="item.label" class="summary-row">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </div>
+          </div>
+          <div class="button-column" style="margin-top: 12px;">
+            <button class="button button-secondary" @click="saveCurrentReport">Save Report</button>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <RunDiagnosticsPanel :statuses="statuses" :traces="traces" :trace-error="traceError" :compact="true" empty-trace-message="Trace records appear here when available." />
   </div>
 </template>

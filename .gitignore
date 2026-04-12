@@ -12,3 +12,5 @@ Thumbs.db
 data/cache/
 data/uploads/
 services/data/*.db
+apps/web/dist/
+apps/web/node_modules/

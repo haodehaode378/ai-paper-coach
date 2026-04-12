@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from app.core.chunker import split_sections, top_chunks
 from app.core.model_router import ModelRouter
 from app.core.orchestrator import generate_draft, get_requirement_issues, normalize_report, patch_draft, review_draft
+from app.core.history_store import list_history_records, load_history_record, save_history_record
 from app.core.parser import parse_pdf_file, parse_url
 from app.core.schemas import AnalyzeRequest, FinalizeRequest, ReviewRequest, ValidateModelsRequest
 from app.core.storage import (
@@ -119,6 +120,26 @@ def _json_len(value: Any) -> int:
         return len(str(value))
 
 
+def _save_history_snapshot(*, run: dict[str, Any], paper: dict[str, Any], report: dict[str, Any], stage: str) -> None:
+    payload = {
+        "record_id": run["id"],
+        "run_id": run["id"],
+        "paper_id": paper["id"],
+        "stage": stage,
+        "status": run.get("status", "done"),
+        "saved_at": run.get("finished_at") or run.get("started_at"),
+        "meta": {
+            "paper_id": paper["id"],
+            "title": (report.get("paper_meta") or {}).get("title") or paper.get("title") or paper.get("source_name") or paper["id"],
+            "source_type": paper.get("source_type", "url"),
+            "source_name": paper.get("source_name", "-"),
+            "saved_at": run.get("finished_at") or run.get("started_at"),
+        },
+        "report": report,
+    }
+    save_history_record(record_id=run["id"], payload=payload)
+
+
 @router.post("/validate-models")
 def validate_models(req: ValidateModelsRequest):
     cfg = req.llm_config.model_dump() if req.llm_config else None
@@ -155,6 +176,10 @@ def analyze(req: AnalyzeRequest):
         )
         save_draft(run["id"], draft)
         update_run_status(run["id"], "done")
+        run = get_latest_run(req.paper_id) or run
+        merged_report = _merge_report_for_display(draft=draft, review=None, final=None)
+        if merged_report:
+            _save_history_snapshot(run=run, paper=paper, report=merged_report, stage="analyze")
     except Exception as e:
         update_run_status(run["id"], "failed")
         raise HTTPException(status_code=500, detail=f"analyze failed: {e}") from e
@@ -188,7 +213,7 @@ def analyze(req: AnalyzeRequest):
         issues = get_requirement_issues(draft)
         if issues:
             warnings.append(
-                f"report_requirement: 阶段1草稿存在 {len(issues)} 项未达标（属于后续 review/finalize 可补全项）"
+                f"report_requirement: analyze draft has {len(issues)} unresolved requirement issues"
             )
 
     return {
@@ -281,6 +306,11 @@ def finalize(req: FinalizeRequest):
             trace_hook=lambda item: append_llm_trace(run_id=run["id"], **item),
         )
         save_final(run["id"], final)
+        run = get_latest_run(req.paper_id) or run
+        paper = get_paper(req.paper_id)
+        merged_report = _merge_report_for_display(draft=draft, review=review, final=final)
+        if paper and merged_report:
+            _save_history_snapshot(run=run, paper=paper, report=merged_report, stage="finalize")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"finalize failed: {e}") from e
 
@@ -341,3 +371,17 @@ def trace(paper_id: str):
         "status": run["status"],
         "traces": get_llm_traces(run["id"]),
     }
+
+@router.get("/history")
+def history_list():
+    return {
+        "items": list_history_records(),
+    }
+
+
+@router.get("/history/{record_id}")
+def history_detail(record_id: str):
+    record = load_history_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="history record not found")
+    return record

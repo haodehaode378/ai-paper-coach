@@ -14,62 +14,82 @@ const props = defineProps({
   },
   emptyTraceMessage: {
     type: String,
-    default: '等待任务开始。'
+    default: 'Waiting for a task to start.'
+  },
+  compact: {
+    type: Boolean,
+    default: false
   }
 })
 
 function previewText(value) {
   const text = String(value || '').trim()
-  return text.length > 600 ? `${text.slice(0, 600)}\n...` : text
+  return text.length > 480 ? `${text.slice(0, 480)}\n...` : text
 }
 </script>
 
 <template>
-  <section class="panel diagnostics-panel">
-    <div class="panel-heading">
-      <div>
-        <h2>运行状态</h2>
-        <p class="panel-subtitle">实时讯息面板已启用（trace-v1）</p>
-      </div>
+  <section class="console-shell" :class="{ 'console-shell-compact': compact }">
+    <div class="console-tabs">
+      <span class="console-tab console-tab-active">Log</span>
+      <span class="console-tab">Trace</span>
+      <span class="console-tab">Warning</span>
+      <span class="console-tab">Error</span>
     </div>
 
-    <ol class="status-list">
-      <li v-for="status in props.statuses" :key="status">{{ status }}</li>
-    </ol>
-
-    <div class="trace-block">
-      <h3>实时讯息</h3>
-
-      <div v-if="props.traceError" class="trace-error">
-        trace 接口错误：{{ props.traceError }}
+    <div class="console-body">
+      <div class="console-column">
+        <div class="console-title-row">
+          <h3>Run Log</h3>
+          <span class="console-meta">{{ statuses.length }} items</span>
+        </div>
+        <ol class="status-list console-list">
+          <li v-for="status in statuses" :key="status">{{ status }}</li>
+          <li v-if="!statuses.length" class="console-empty">No runtime logs yet.</li>
+        </ol>
       </div>
 
-      <div v-else-if="!props.traces.length" class="trace-empty">
-        {{ props.emptyTraceMessage }}
-      </div>
+      <div class="console-column console-column-wide">
+        <div class="console-title-row">
+          <h3>Trace Panel</h3>
+          <span class="console-meta">{{ traces.length }} items</span>
+        </div>
 
-      <div v-else class="trace-list">
-        <details v-for="(trace, index) in props.traces" :key="trace.id || `${trace.phase}-${trace.created_at}-${index}`" class="trace-item">
-          <summary>
-            {{ index + 1 }}.
-            <span v-if="trace.run_id">run={{ String(trace.run_id).slice(0, 8) }}</span>
-            {{ trace.phase || '-' }} / {{ trace.provider_name || trace.provider_slot || '-' }} / {{ trace.model || '-' }}
-          </summary>
-          <div class="trace-content">
-            <div>
-              <p class="trace-label">System</p>
-              <pre>{{ previewText(trace.request_system || '-') }}</pre>
+        <div v-if="traceError" class="trace-error">
+          Trace endpoint error: {{ traceError }}
+        </div>
+
+        <div v-else-if="!traces.length" class="console-empty">
+          {{ emptyTraceMessage }}
+        </div>
+
+        <div v-else class="trace-list">
+          <details
+            v-for="(trace, index) in traces"
+            :key="trace.id || `${trace.phase}-${trace.created_at}-${index}`"
+            class="trace-item"
+          >
+            <summary>
+              {{ index + 1 }}.
+              <span v-if="trace.run_id">run={{ String(trace.run_id).slice(0, 8) }}</span>
+              {{ trace.phase || '-' }} / {{ trace.provider_name || trace.provider_slot || '-' }} / {{ trace.model || '-' }}
+            </summary>
+            <div class="trace-content">
+              <div>
+                <p class="trace-label">System</p>
+                <pre>{{ previewText(trace.request_system || '-') }}</pre>
+              </div>
+              <div>
+                <p class="trace-label">User</p>
+                <pre>{{ previewText(trace.request_user || '-') }}</pre>
+              </div>
+              <div>
+                <p class="trace-label">Response</p>
+                <pre>{{ previewText(trace.response_text || trace.error_text || '-') }}</pre>
+              </div>
             </div>
-            <div>
-              <p class="trace-label">User</p>
-              <pre>{{ previewText(trace.request_user || '-') }}</pre>
-            </div>
-            <div>
-              <p class="trace-label">Response</p>
-              <pre>{{ previewText(trace.response_text || trace.error_text || '-') }}</pre>
-            </div>
-          </div>
-        </details>
+          </details>
+        </div>
       </div>
     </div>
   </section>

@@ -22,7 +22,7 @@ export async function callApi(base, path, options = {}, timeoutMs = 120000) {
     return await response.text()
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error(`请求超时（>${Math.floor(timeoutMs / 1000)}秒）`)
+      throw new Error(`Request timed out (${Math.floor(timeoutMs / 1000)}s)`)
     }
 
     throw error
@@ -33,5 +33,5 @@ export async function callApi(base, path, options = {}, timeoutMs = 120000) {
 
 export function isTimeoutError(error) {
   const message = error?.message ? String(error.message) : ''
-  return message.includes('请求超时（>')
+  return message.includes('Request timed out')
 }
