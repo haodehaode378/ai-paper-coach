@@ -704,7 +704,7 @@ button {
 
 .result-split-shell {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   min-width: 0;
   gap: 0;
 }
@@ -740,6 +740,10 @@ button {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
+  height: clamp(420px, calc(100vh - 170px), 760px);
+  position: sticky;
+  top: 14px;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -748,31 +752,8 @@ button {
   gap: 12px;
   align-items: flex-start;
 }
-
-.chat-quick-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.chat-quick-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border-soft);
-  background: rgba(255, 255, 255, 0.28);
-  color: var(--text);
-}
-
-.chat-quick-button:hover {
-  background: rgba(255, 255, 255, 0.42);
-}
-
 .chat-message-list {
   min-height: 0;
-  max-height: 720px;
   overflow: auto;
   display: grid;
   gap: 12px;
@@ -852,6 +833,8 @@ button {
     width: 100% !important;
     max-width: none;
     margin-left: 0;
+    height: auto;
+    position: static;
   }
 
   .result-chat-resizer {
@@ -901,4 +884,43 @@ button {
 
 .chat-context-toggle input {
   margin: 0;
+}
+
+
+.paper-preview-section {
+  display: grid;
+  gap: 10px;
+}
+
+.paper-preview-frame {
+  width: 100%;
+  height: clamp(520px, 72vh, 980px);
+  border: 1px solid var(--border-soft);
+  background: #fff;
+}
+
+.pdf-viewer-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.pdf-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pdf-canvas-wrap {
+  max-height: clamp(520px, 72vh, 980px);
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  background: #f8f5f0;
+  padding: 8px;
+}
+
+.pdf-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #fff;
 }

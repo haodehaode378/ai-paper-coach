@@ -1,14 +1,18 @@
-<script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+﻿<script setup>
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import RunDiagnosticsPanel from '../components/RunDiagnosticsPanel.vue'
 import { callApi } from '../lib/api'
 import { buildModelConfig, loadLastResult, loadModelConfig } from '../lib/storage'
 import { useTraceHistory } from '../composables/useTraceHistory'
+import * as pdfjsLib from 'pdfjs-dist'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 const CHAT_WIDTH_KEY = 'apc_report_chat_width_v1'
 const CHAT_OPEN_KEY = 'apc_report_chat_open_v1'
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +26,13 @@ const historyRecords = ref([])
 const activeRecordId = ref('')
 const activeTab = ref('checks')
 const activeQuestionKey = ref('q1_problem_and_novelty')
+const pdfCanvasRef = ref(null)
+const pdfDoc = ref(null)
+const pdfLoading = ref(false)
+const pdfError = ref('')
+const pdfPage = ref(1)
+const pdfPageCount = ref(0)
+const loadedPdfKey = ref('')
 
 const chatInput = ref('')
 const chatLoading = ref(false)
@@ -46,7 +57,7 @@ const questionMeta = [
 function createStarterMessage() {
   return {
     role: 'assistant',
-    content: '你好，我可以基于当前报告与你对话。你可以让我总结创新点、整理复现步骤、检查缺项，或追问七问里的任何部分。',
+    content: '你好，我可以基于当前报告与你对话。请直接输入你的问题。',
   }
 }
 
@@ -153,10 +164,21 @@ const activeQuestion = computed(() => {
   return { ...meta, value: readingQa[meta.key] || '-' }
 })
 
+const pdfPreviewUrl = computed(() => {
+  if (!paperId.value || !apiBase.value) return ''
+  const base = String(apiBase.value).trim().replace(/\/$/, '')
+  return `${base}/papers/${encodeURIComponent(paperId.value)}/pdf#view=FitH`
+})
+
+const pdfPageLabel = computed(() => {
+  if (!pdfPageCount.value) return '0 / 0'
+  return `${pdfPage.value} / ${pdfPageCount.value}`
+})
+
 const reportStats = computed(() => [
   { label: '载入状态', value: report.value ? '已载入' : '未载入' },
   { label: '要求检查', value: requirementChecks.value.every((item) => item.ok) ? '通过' : '需补充' },
-  { label: 'Trace 数量', value: `${traces.value.length}` },
+  { label: 'Trace 数量', value: String(traces.value.length) },
   { label: '记录 ID', value: activeRecordId.value || '-' },
 ])
 
@@ -234,6 +256,91 @@ function extractErrorText(text) {
   } catch {
     return text
   }
+}
+
+async function renderPdfPage() {
+  if (!pdfDoc.value || !pdfCanvasRef.value) return
+
+  const safePage = Math.min(
+    Math.max(Number(pdfPage.value) || 1, 1),
+    Math.max(Number(pdfPageCount.value) || 1, 1),
+  )
+  if (safePage !== pdfPage.value) {
+    pdfPage.value = safePage
+  }
+
+  try {
+    const page = await pdfDoc.value.getPage(safePage)
+    const viewport = page.getViewport({ scale: 1.2 })
+    const canvas = pdfCanvasRef.value
+    const context = canvas.getContext('2d')
+    if (!context) {
+      throw new Error('Canvas 2D context unavailable')
+    }
+    canvas.width = Math.floor(viewport.width)
+    canvas.height = Math.floor(viewport.height)
+    await page.render({ canvasContext: context, viewport }).promise
+  } catch (error) {
+    pdfError.value = error?.message || 'PDF 加载失败'
+  }
+}
+
+async function loadPdfDocument(force = false) {
+  const url = pdfPreviewUrl.value
+  const key = `${apiBase.value}|${paperId.value}`
+
+  if (!url) {
+    pdfDoc.value = null
+    pdfPage.value = 1
+    pdfPageCount.value = 0
+    pdfError.value = ''
+    return
+  }
+
+  if (!force && loadedPdfKey.value === key && pdfDoc.value) {
+    await nextTick()
+    await renderPdfPage()
+    return
+  }
+
+  pdfLoading.value = true
+  pdfError.value = ''
+  pdfDoc.value = null
+  pdfPage.value = 1
+  pdfPageCount.value = 0
+
+  try {
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(extractErrorText(await response.text()) || `HTTP ${response.status}`)
+    }
+    const bytes = await response.arrayBuffer()
+    const task = pdfjsLib.getDocument({ data: bytes })
+    const doc = await task.promise
+    pdfDoc.value = markRaw(doc)
+    pdfPageCount.value = doc.numPages
+    pdfPage.value = 1
+    loadedPdfKey.value = key
+  } catch (error) {
+    pdfError.value = error?.message || 'PDF 加载失败'
+  } finally {
+    pdfLoading.value = false
+  }
+
+  if (!pdfError.value && pdfDoc.value) {
+    await nextTick()
+    await renderPdfPage()
+  }
+}
+
+function prevPdfPage() {
+  if (pdfPage.value <= 1) return
+  pdfPage.value -= 1
+}
+
+function nextPdfPage() {
+  if (pdfPage.value >= pdfPageCount.value) return
+  pdfPage.value += 1
 }
 
 async function streamChatReply(base, payload, userTurns) {
@@ -357,6 +464,11 @@ async function loadReport() {
   report.value = null
   stopPolling()
   resetChatSession()
+  pdfDoc.value = null
+  pdfPage.value = 1
+  pdfPageCount.value = 0
+  pdfError.value = ''
+  loadedPdfKey.value = ''
 
   if (!context.value?.api_base) {
     addStatus('没有可用的接口地址，请先回到控制台运行一次任务。')
@@ -402,6 +514,7 @@ async function loadReport() {
   }
 }
 
+
 onMounted(() => {
   loadHistoryRecords()
   nextTick(scrollChatToBottom)
@@ -413,6 +526,14 @@ onBeforeUnmount(() => {
 
 watch(() => route.fullPath, loadReport, { immediate: true })
 watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
+watch([activeTab, paperId, apiBase], async ([tab]) => {
+  if (tab === 'paper') await loadPdfDocument()
+})
+watch(pdfPage, async () => {
+  if (activeTab.value !== 'paper') return
+  await nextTick()
+  await renderPdfPage()
+})
 </script>
 
 <template>
@@ -492,6 +613,7 @@ watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'summary' }" @click="activeTab = 'summary'">摘要</button>
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'reproduction' }" @click="activeTab = 'reproduction'">复现指导</button>
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'qa' }" @click="activeTab = 'qa'">七问回答</button>
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'paper' }" @click="activeTab = 'paper'">论文原文</button>
                 </div>
               </div>
 
@@ -548,7 +670,28 @@ watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
                     <pre>{{ activeQuestion.value }}</pre>
                   </article>
                 </section>
-              </div>
+ 
+                <section v-if="activeTab === 'paper'" class="report-section report-section-compact paper-preview-section">
+                  <div class="section-row">
+                    <h3>论文原文</h3>
+                    <span class="sidebar-meta" v-if="paperId">paper_id={{ paperId }}</span>
+                  </div>
+                  <p v-if="!paperId" class="empty-state">缺少论文 ID，无法定位 PDF。</p>
+                  <p v-else-if="!pdfPreviewUrl" class="empty-state">未生成 PDF 预览地址。</p>
+                  <p v-else-if="pdfLoading" class="empty-state">正在加载 PDF...</p>
+                  <p v-else-if="pdfError" class="error-text">{{ pdfError }}</p>
+                  <div v-else class="pdf-viewer-shell">
+                    <div class="pdf-viewer-toolbar">
+                      <button class="button button-secondary" :disabled="pdfPage <= 1" @click="prevPdfPage">上一页</button>
+                      <span class="sidebar-meta">页码 {{ pdfPageLabel }}</span>
+                      <button class="button button-secondary" :disabled="pdfPage >= pdfPageCount" @click="nextPdfPage">下一页</button>
+                    </div>
+                    <div class="pdf-canvas-wrap">
+                      <canvas ref="pdfCanvasRef" class="pdf-canvas" />
+                    </div>
+                  </div>
+                </section>
+             </div>
             </section>
           </section>
 
@@ -578,13 +721,6 @@ watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
               <span class="sidebar-meta">上下文：{{ chatContextSummary }}</span>
             </div>
 
-            <div class="chat-quick-actions">
-              <button class="chat-quick-button" @click="fillPrompt('请总结这篇论文最重要的创新点。')">总结创新点</button>
-              <button class="chat-quick-button" @click="fillPrompt('请把复现指导整理成执行步骤。')">整理复现步骤</button>
-              <button class="chat-quick-button" @click="fillPrompt('请指出当前报告还缺哪些关键信息。')">指出缺项</button>
-              <button class="chat-quick-button" @click="fillPrompt('请结合历史记录和论文库，告诉我这篇论文和过去记录最接近的方向与差异。')">结合历史与论文库</button>
-            </div>
-
             <div ref="chatListRef" class="chat-message-list">
               <div v-for="(message, index) in chatMessages" :key="`${message.role}-${index}`" class="chat-message" :class="message.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'">
                 <p class="chat-role">{{ message.role === 'user' ? '我' : 'AI 助手' }}</p>
@@ -611,3 +747,4 @@ watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
     <RunDiagnosticsPanel :statuses="statuses" :traces="traces" :trace-error="traceError" :compact="true" empty-trace-message="有可用 trace 时，会显示在这里。" />
   </div>
 </template>
+

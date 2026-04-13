@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -15,3 +15,17 @@ services/data/*.db
 apps/web/dist/
 apps/web/node_modules/
 services/data/history/
+
+# Secrets and local runtime configs
+.env.*
+!.env.example
+*.env.local
+
+# Runtime data and local state
+services/data/app.db
+data/app.db
+data/history/
+data/saved/
+
+# Frontend local state caches (if ever exported)
+apps/web/.local/

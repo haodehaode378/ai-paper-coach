@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from app.core.chunker import split_sections, top_chunks
 from app.core.model_router import ModelRouter
 from app.core.orchestrator import generate_draft, get_requirement_issues, normalize_report, patch_draft, review_draft
-from app.core.history_store import list_history_records, load_history_record, save_history_record
+from app.core.history_store import CACHE_ROOT as HISTORY_CACHE_ROOT, list_history_records, load_history_record, save_history_record
 from app.core.parser import parse_pdf_file, parse_url
 from app.core.schemas import AnalyzeRequest, FinalizeRequest, ReviewRequest, ValidateModelsRequest
 from app.core.storage import (
@@ -30,7 +30,7 @@ from app.core.storage import (
 
 router = APIRouter(tags=["pipeline"])
 
-CACHE_ROOT = Path(__file__).resolve().parents[4] / "data" / "cache"
+CACHE_ROOT = Path(HISTORY_CACHE_ROOT)
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 

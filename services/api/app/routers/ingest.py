@@ -5,10 +5,11 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from app.core.storage import create_paper
+from app.core.history_store import UPLOADS_ROOT
 
 router = APIRouter(tags=["ingest"])
 
-UPLOAD_ROOT = Path(__file__).resolve().parents[4] / "data" / "uploads"
+UPLOAD_ROOT = Path(UPLOADS_ROOT)
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
 
 
