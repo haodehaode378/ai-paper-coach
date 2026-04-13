@@ -41,10 +41,10 @@ const { traces, traceError, startPolling, stopPolling } = useTraceHistory({
 })
 
 const pipelineSteps = computed(() => [
-  { key: 'ingest', label: '瀵煎叆', done: stageState.value.ingest },
-  { key: 'analyze', label: '鍒嗘瀽', done: stageState.value.analyze },
-  { key: 'review', label: '瀹￠槄', done: stageState.value.review },
-  { key: 'finalize', label: '鏁寸悊', done: stageState.value.finalize }
+  { key: 'ingest', label: '导入', done: stageState.value.ingest },
+  { key: 'analyze', label: '分析', done: stageState.value.analyze },
+  { key: 'review', label: '审阅', done: stageState.value.review },
+  { key: 'finalize', label: '整理', done: stageState.value.finalize }
 ])
 
 function resetStageState() {
@@ -56,7 +56,7 @@ async function loadHistoryRecords() {
     const data = await callApi(form.value.apiBase, '/history')
     historyRecords.value = Array.isArray(data.items) ? data.items : []
   } catch (error) {
-    addStatus(`鍘嗗彶璁板綍鍔犺浇澶辫触锛?{error.message}`)
+    addStatus(`历史记录加载失败：${error.message}`)
   }
 }
 
@@ -78,13 +78,13 @@ function setPaperId(paperId) {
 
 function handleSaveConfig() {
   saveModelConfig(form.value)
-  addStatus('妯″瀷閰嶇疆宸蹭繚瀛樺埌鏈湴銆?)
+  addStatus('模型配置已保存到本地。')
 }
 
 function handleClearConfig() {
   const next = clearModelConfig()
   form.value = { ...defaultFormState(), ...next, apiBase: form.value.apiBase }
-  addStatus('妯″瀷閰嶇疆宸蹭粠鏈湴娓呴櫎銆?)
+  addStatus('模型配置已从本地清除。')
 }
 
 async function handleCheckApiConnection() {
@@ -104,9 +104,10 @@ async function handleCheckApiConnection() {
     checkingApi.value = false
   }
 }
+
 async function handleValidateConfig() {
   try {
-    addStatus('寮€濮嬫牎楠屾ā鍨嬫帴鍙ｉ厤缃?..')
+    addStatus('开始校验模型接口配置...')
     const data = await callApi(form.value.apiBase, '/validate-models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -116,26 +117,26 @@ async function handleValidateConfig() {
     if (Array.isArray(data.results)) {
       for (const item of data.results) {
         if (item.ok) {
-          addStatus(`鏍￠獙閫氳繃锛?{item.display_name || item.provider}锛?{item.latency_ms} ms锛塦)
+          addStatus(`校验通过：${item.display_name || item.provider}，${item.latency_ms} ms`)
         } else {
-          addStatus(`鏍￠獙澶辫触锛?{item.display_name || item.provider} - ${item.error || '鏈煡閿欒'}`)
+          addStatus(`校验失败：${item.display_name || item.provider} - ${item.error || '未知错误'}`)
         }
       }
     }
 
-    addStatus(data.ok ? '鎺ュ彛鏍￠獙瀹屾垚锛屽叏閮ㄩ€氳繃銆? : '鎺ュ彛鏍￠獙瀹屾垚锛屽瓨鍦ㄥけ璐ラ」銆?)
+    addStatus(data.ok ? '模型接口校验完成，全部通过。' : '模型接口校验完成，存在失败项。')
   } catch (error) {
-    addStatus(`鎺ュ彛鏍￠獙璇锋眰澶辫触锛?{error.message}`)
+    addStatus(`模型接口校验请求失败：${error.message}`)
   }
 }
 
 async function ingest() {
   const url = String(form.value.paperUrl || '').trim()
   if (!url && !paperFile.value) {
-    throw new Error('璇锋彁渚涜鏂囬摼鎺ユ垨涓婁紶 PDF 鏂囦欢銆?)
+    throw new Error('请提供论文链接或上传 PDF 文件。')
   }
 
-  addStatus('姝ｅ湪瀵煎叆璁烘枃杈撳叆...')
+  addStatus('正在导入论文输入...')
 
   let payload
   if (paperFile.value) {
@@ -152,56 +153,56 @@ async function ingest() {
   }
 
   const paperId = payload.paper_id || payload.id || payload.paperId
-  if (!paperId) throw new Error('瀵煎叆鎴愬姛锛屼絾鍚庣娌℃湁杩斿洖 paper_id銆?)
+  if (!paperId) throw new Error('导入成功，但后端没有返回 paper_id。')
 
   setPaperId(paperId)
   stageState.value.ingest = true
   startPolling()
-  addStatus(`瀵煎叆瀹屾垚锛歱aper_id=${paperId}`)
+  addStatus(`导入完成：paper_id=${paperId}`)
   return paperId
 }
 
 function emitStageMessages(data, fallbackStage) {
-  if (Array.isArray(data?.warnings)) data.warnings.forEach((warning) => addStatus(`鎻愮ず锛?{warning}`))
+  if (Array.isArray(data?.warnings)) data.warnings.forEach((warning) => addStatus(`提示：${warning}`))
   if (data?.stage_metrics) {
     const metrics = data.stage_metrics
-    addStatus(`闃舵鎸囨爣锛?{metrics.stage || fallbackStage || '-'} 杈撳叆=${Number(metrics.input_chars || 0)} 杈撳嚭=${Number(metrics.output_chars || 0)} 鑰楁椂=${Number(metrics.elapsed_ms || 0)} ms`)
+    addStatus(`阶段指标：${metrics.stage || fallbackStage || '-'} 输入=${Number(metrics.input_chars || 0)} 输出=${Number(metrics.output_chars || 0)} 耗时=${Number(metrics.elapsed_ms || 0)} ms`)
   }
 }
 
 async function runAnalyze(paperId, mode, modelConfig) {
-  addStatus(`寮€濮嬫墽琛屽垎鏋愰樁娈碉紙${mode}锛?..`)
+  addStatus(`开始执行分析阶段（${mode}）...`)
   const data = await callApi(form.value.apiBase, '/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
   }, TIMEOUT_ANALYZE_MS)
   stageState.value.analyze = true
-  addStatus('鍒嗘瀽闃舵瀹屾垚銆?)
+  addStatus('分析阶段完成。')
   emitStageMessages(data, 'analyze')
 }
 
 async function runReview(paperId, modelConfig) {
-  addStatus('寮€濮嬫墽琛屽闃呴樁娈?..')
+  addStatus('开始执行审阅阶段...')
   const data = await callApi(form.value.apiBase, '/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
   }, TIMEOUT_REVIEW_MS)
   stageState.value.review = true
-  addStatus('瀹￠槄闃舵瀹屾垚銆?)
+  addStatus('审阅阶段完成。')
   emitStageMessages(data, 'review')
 }
 
 async function runFinalize(paperId, mode, modelConfig) {
-  addStatus('寮€濮嬫墽琛屾暣鐞嗛樁娈?..')
+  addStatus('开始执行整理阶段...')
   const data = await callApi(form.value.apiBase, '/finalize', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
   }, TIMEOUT_FINALIZE_MS)
   stageState.value.finalize = true
-  addStatus('鏁寸悊闃舵瀹屾垚銆?)
+  addStatus('整理阶段完成。')
   emitStageMessages(data, 'finalize')
 }
 
@@ -214,7 +215,7 @@ async function runPipeline() {
 
     const mode = form.value.runMode || 'deep'
     const modelConfig = currentModelConfig()
-    addStatus(`鏈閰嶇疆锛氭ā鍨?A=${modelConfig.primary.model} | 妯″瀷 B=${modelConfig.secondary.model} | 妯″紡=${mode}`)
+    addStatus(`本次配置：模型 A=${modelConfig.primary.model} | 模型 B=${modelConfig.secondary.model} | 模式=${mode}`)
 
     const paperId = await ingest()
     await runAnalyze(paperId, mode, modelConfig)
@@ -231,13 +232,13 @@ async function runPipeline() {
   } catch (error) {
     if (isTimeoutError(error) && currentPaperId.value) {
       addStatus(error.message)
-      addStatus('鍚庣鍙兘浠嶅湪澶勭悊涓紝姝ｅ湪璺宠浆鍒扮粨鏋滈〉缁х画鏌ョ湅銆?)
+      addStatus('后端可能仍在处理中，正在跳转到结果页继续查看。')
       saveLastResult({ paper_id: currentPaperId.value, api_base: form.value.apiBase })
       await router.push({ name: 'results', query: { paper_id: currentPaperId.value, api_base: form.value.apiBase } })
       return
     }
     stopPolling()
-    addStatus(`閿欒锛?{error.message}`)
+    addStatus(`错误：${error.message}`)
   } finally {
     isRunning.value = false
   }
@@ -245,7 +246,7 @@ async function runPipeline() {
 
 onMounted(() => {
   loadHistoryRecords()
-  addStatus('鎺у埗鍙板凡灏辩华锛屽彲浠ュ紑濮嬫柊浠诲姟鎴栨墦寮€鍘嗗彶璁板綍銆?)
+  addStatus('控制台已就绪，可以开始新任务或打开历史记录。')
 })
 </script>
 
@@ -418,11 +419,14 @@ onMounted(() => {
         :traces="traces"
         :trace-error="traceError"
         :compact="true"
-        empty-trace-message="浠诲姟寮€濮嬪悗锛岃繖閲屼細鏄剧ず璋冪敤杞ㄨ抗鍜屾棩蹇椼€?
+        empty-trace-message="任务开始后，这里会显示调用轨迹和日志。"
       />
     </div>
   </div>
 </template>
+
+
+
 
 
 
