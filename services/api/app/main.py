@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import analyze, export, ingest, records
+from app.routers import analyze, chat, export, ingest, records
 from app.core.storage import init_db
 
 
@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
     app.include_router(analyze.router)
     app.include_router(export.router)
     app.include_router(records.router)
+    app.include_router(chat.router)
     return app
 
 

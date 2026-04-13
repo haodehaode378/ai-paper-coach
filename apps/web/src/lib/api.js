@@ -14,8 +14,11 @@ export async function callApi(base, path, options = {}, timeoutMs = 120000) {
   } catch (error) {
     if (error?.name === 'AbortError') throw new Error(`请求超时（${Math.floor(timeoutMs / 1000)} 秒）`)
     throw error
-  } finally { window.clearTimeout(timer) }
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
+
 export function isTimeoutError(error) {
   const message = error?.message ? String(error.message) : ''
   return message.includes('请求超时')

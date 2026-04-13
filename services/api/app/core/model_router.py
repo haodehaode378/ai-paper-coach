@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -316,6 +316,151 @@ class ModelRouter:
             return best_obj
 
         raise ValueError("Unable to parse JSON object from model response")
+    def _chat_stream(self, *, base: str, key: str, model: str, system: str, user: str, timeout_sec: int = 180, temperature: float = 0.2):
+        if not base or not key:
+            raise RuntimeError("Missing model API configuration")
+
+        url = self._build_chat_url(base)
+        messages = []
+        if isinstance(system, str) and system.strip():
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": self._resolve_max_tokens(),
+            "messages": messages,
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+        with requests.post(url, json=payload, headers=headers, timeout=(8, timeout_sec), stream=True) as res:
+            if not res.ok:
+                body = (res.text or "")[:300]
+                raise RuntimeError(f"status={res.status_code}, body={body}")
+
+            for raw_line in res.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                line = raw_line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(data_str)
+                except Exception:
+                    continue
+
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0] or {}
+                delta = choice.get("delta") or {}
+                content = delta.get("content")
+
+                if isinstance(content, list):
+                    text = "".join(
+                        item.get("text", "")
+                        for item in content
+                        if isinstance(item, dict)
+                    )
+                elif isinstance(content, str):
+                    text = content
+                else:
+                    message = choice.get("message") or {}
+                    text = message.get("content") if isinstance(message, dict) else ""
+
+                if text:
+                    yield text
+
+    def chat_text(self, *, slot: str = "primary", system: str = "", user: str = "") -> str:
+        p = self.providers.get(slot)
+        if not p:
+            raise RuntimeError(f"Unknown provider slot: {slot}")
+
+        try:
+            timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
+            temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
+            content = self._chat(
+                base=p["base"],
+                key=p["key"],
+                model=p["model"],
+                system=system,
+                user=user,
+                timeout_sec=timeout_sec,
+                temperature=temperature,
+            )
+            text = (content or "").strip()
+            if not text:
+                raise RuntimeError("empty_model_output")
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                response_text=text,
+            )
+            return text
+        except Exception as e:
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                error_text=str(e),
+            )
+            raise RuntimeError(
+                f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
+            ) from e
+
+    def chat_text_stream(self, *, slot: str = "primary", system: str = "", user: str = ""):
+        p = self.providers.get(slot)
+        if not p:
+            raise RuntimeError(f"Unknown provider slot: {slot}")
+
+        collected = []
+        try:
+            timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
+            temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
+            for chunk in self._chat_stream(
+                base=p["base"],
+                key=p["key"],
+                model=p["model"],
+                system=system,
+                user=user,
+                timeout_sec=timeout_sec,
+                temperature=temperature,
+            ):
+                collected.append(chunk)
+                yield chunk
+            full_text = "".join(collected).strip()
+            if not full_text:
+                raise RuntimeError("empty_model_output")
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                response_text=full_text,
+            )
+        except Exception as e:
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                error_text=str(e),
+            )
+            raise RuntimeError(
+                f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
+            ) from e
     def _call_slot(self, slot: str, system: str, user: str) -> dict[str, Any]:
         p = self.providers.get(slot)
         if not p:

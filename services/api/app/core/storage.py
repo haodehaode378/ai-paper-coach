@@ -109,6 +109,15 @@ def get_paper(paper_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+def list_papers(limit: int = 20) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM papers ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def create_run(paper_id: str, mode: str) -> dict[str, Any]:
     run_id = str(uuid.uuid4())
     started_at = now_iso()

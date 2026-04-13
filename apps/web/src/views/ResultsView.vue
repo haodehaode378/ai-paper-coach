@@ -1,11 +1,14 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import RunDiagnosticsPanel from '../components/RunDiagnosticsPanel.vue'
 import { callApi } from '../lib/api'
-import { loadLastResult } from '../lib/storage'
+import { buildModelConfig, loadLastResult, loadModelConfig } from '../lib/storage'
 import { useTraceHistory } from '../composables/useTraceHistory'
+
+const CHAT_WIDTH_KEY = 'apc_report_chat_width_v1'
+const CHAT_OPEN_KEY = 'apc_report_chat_open_v1'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +20,42 @@ const paperId = ref('')
 const apiBase = ref('')
 const historyRecords = ref([])
 const activeRecordId = ref('')
+const activeTab = ref('checks')
+const activeQuestionKey = ref('q1_problem_and_novelty')
+
+const chatInput = ref('')
+const chatLoading = ref(false)
+const includeHistoryContext = ref(true)
+const includePapersContext = ref(true)
+const chatOpen = ref(localStorage.getItem(CHAT_OPEN_KEY) !== '0')
+const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 380))
+const chatListRef = ref(null)
+const chatMessages = ref([])
+let resizing = false
+
+const questionMeta = [
+  { key: 'q1_problem_and_novelty', title: '问题一', short: '问题与创新' },
+  { key: 'q2_related_work_and_researchers', title: '问题二', short: '相关工作' },
+  { key: 'q3_key_idea', title: '问题三', short: '核心思路' },
+  { key: 'q4_experiment_design', title: '问题四', short: '实验设计' },
+  { key: 'q5_dataset_and_code', title: '问题五', short: '数据与代码' },
+  { key: 'q6_support_for_claims', title: '问题六', short: '结论支撑' },
+  { key: 'q7_contribution_and_next_step', title: '问题七', short: '贡献与下一步' },
+]
+
+function createStarterMessage() {
+  return {
+    role: 'assistant',
+    content: '你好，我可以基于当前报告与你对话。你可以让我总结创新点、整理复现步骤、检查缺项，或追问七问里的任何部分。',
+  }
+}
+
+function resetChatSession() {
+  chatMessages.value = [createStarterMessage()]
+  chatInput.value = ''
+}
+
+resetChatSession()
 
 function addStatus(message) {
   const timestamp = new Date().toLocaleTimeString()
@@ -26,7 +65,7 @@ function addStatus(message) {
 const { traces, traceError, startPolling, stopPolling, fetchTraces } = useTraceHistory({
   paperIdRef: paperId,
   apiBaseRef: apiBase,
-  addStatus
+  addStatus,
 })
 
 function textLen(value) {
@@ -63,57 +102,230 @@ const requirementChecks = computed(() => {
   const reproduction = report.value?.reproduction_guide || {}
   const readingQa = report.value?.reading_qa || {}
   const reproductionTotal =
-    textLen(reproduction.environment || '') + textLen(reproduction.dataset || '') + textLen(reproduction.commands || []) +
-    textLen(reproduction.key_hyperparams || []) + textLen(reproduction.expected_range || '') + textLen(reproduction.common_errors || [])
+    textLen(reproduction.environment || '') +
+    textLen(reproduction.dataset || '') +
+    textLen(reproduction.commands || []) +
+    textLen(reproduction.key_hyperparams || []) +
+    textLen(reproduction.expected_range || '') +
+    textLen(reproduction.common_errors || [])
 
-  const qaKeys = ['q1_problem_and_novelty','q2_related_work_and_researchers','q3_key_idea','q4_experiment_design','q5_dataset_and_code','q6_support_for_claims','q7_contribution_and_next_step']
   const checks = [
-    { key: 'three_minute_summary.problem', min: 1000, actual: textLen(summary.problem || '') },
-    { key: 'reproduction_guide.total', min: 1000, actual: reproductionTotal }
+    { key: 'three_minute_summary.problem', title: '摘要：论文问题与目标', min: 1000, actual: textLen(summary.problem || '') },
+    { key: 'reproduction_guide.total', title: '复现指导：整体内容', min: 1000, actual: reproductionTotal },
   ]
-  qaKeys.forEach((key) => checks.push({ key: `reading_qa.${key}`, min: 700, actual: textLen(readingQa[key] || '') }))
+
+  questionMeta.forEach((item) => {
+    checks.push({
+      key: item.key,
+      title: `七问：${item.short}`,
+      min: 700,
+      actual: textLen(readingQa[item.key] || ''),
+    })
+  })
+
   return checks.map((item) => ({ ...item, ok: item.actual >= item.min }))
 })
 
-const reportSections = computed(() => {
-  if (!report.value) return []
-  const summary = report.value.three_minute_summary || {}
-  const reproduction = report.value.reproduction_guide || {}
-  const readingQa = report.value.reading_qa || {}
+const summaryBlocks = computed(() => {
+  const summary = report.value?.three_minute_summary || {}
   return [
-    { title: '摘要', blocks: [
-      { label: '论文问题与目标', type: 'text', value: summary.problem || '-' },
-      { label: '方法要点', type: 'list', value: summary.method_points || [] },
-      { label: '关键结果', type: 'list', value: summary.key_results || [] }
-    ]},
-    { title: '复现指导', blocks: [
-      { label: '环境要求', type: 'text', value: reproduction.environment || '-' },
-      { label: '数据集', type: 'text', value: reproduction.dataset || '-' },
-      { label: '执行命令', type: 'list', value: reproduction.commands || [] },
-      { label: '关键超参数', type: 'list', value: reproduction.key_hyperparams || [] }
-    ]},
-    { title: '七个问题', blocks: [
-      { label: '问题一', type: 'text', value: readingQa.q1_problem_and_novelty || '-' },
-      { label: '问题二', type: 'text', value: readingQa.q2_related_work_and_researchers || '-' },
-      { label: '问题三', type: 'text', value: readingQa.q3_key_idea || '-' },
-      { label: '问题四', type: 'text', value: readingQa.q4_experiment_design || '-' },
-      { label: '问题五', type: 'text', value: readingQa.q5_dataset_and_code || '-' },
-      { label: '问题六', type: 'text', value: readingQa.q6_support_for_claims || '-' },
-      { label: '问题七', type: 'text', value: readingQa.q7_contribution_and_next_step || '-' }
-    ]}
+    { title: '论文问题与目标', type: 'text', value: summary.problem || '-' },
+    { title: '方法要点', type: 'list', value: summary.method_points || [] },
+    { title: '关键结果', type: 'list', value: summary.key_results || [] },
   ]
+})
+
+const reproductionBlocks = computed(() => {
+  const reproduction = report.value?.reproduction_guide || {}
+  return [
+    { title: '环境要求', type: 'text', value: reproduction.environment || '-' },
+    { title: '数据集', type: 'text', value: reproduction.dataset || '-' },
+    { title: '执行命令', type: 'list', value: reproduction.commands || [] },
+    { title: '关键超参数', type: 'list', value: reproduction.key_hyperparams || [] },
+    { title: '结果范围', type: 'text', value: reproduction.expected_range || '-' },
+    { title: '常见问题', type: 'list', value: reproduction.common_errors || [] },
+  ]
+})
+
+const activeQuestion = computed(() => {
+  const readingQa = report.value?.reading_qa || {}
+  const meta = questionMeta.find((item) => item.key === activeQuestionKey.value) || questionMeta[0]
+  return { ...meta, value: readingQa[meta.key] || '-' }
 })
 
 const reportStats = computed(() => [
   { label: '载入状态', value: report.value ? '已载入' : '未载入' },
   { label: '要求检查', value: requirementChecks.value.every((item) => item.ok) ? '通过' : '需补充' },
   { label: 'Trace 数量', value: `${traces.value.length}` },
-  { label: '记录 ID', value: activeRecordId.value || '-' }
+  { label: '记录 ID', value: activeRecordId.value || '-' },
 ])
+
+const chatContextSummary = computed(() => {
+  const parts = ['当前报告']
+  if (includeHistoryContext.value) parts.push('历史记录')
+  if (includePapersContext.value) parts.push('论文库')
+  return parts.join(' + ')
+})
+
+function toggleChat() {
+  chatOpen.value = !chatOpen.value
+  localStorage.setItem(CHAT_OPEN_KEY, chatOpen.value ? '1' : '0')
+  if (chatOpen.value) nextTick(scrollChatToBottom)
+}
+
+function openChat() {
+  if (chatOpen.value) return
+  chatOpen.value = true
+  localStorage.setItem(CHAT_OPEN_KEY, '1')
+  nextTick(scrollChatToBottom)
+}
+
+function clearChat() {
+  resetChatSession()
+}
+
+function startResize(event) {
+  resizing = true
+  document.body.style.cursor = 'col-resize'
+  window.addEventListener('pointermove', onResize)
+  window.addEventListener('pointerup', stopResize)
+  event.preventDefault()
+}
+
+function onResize(event) {
+  if (!resizing) return
+  const width = Math.min(Math.max(window.innerWidth - event.clientX - 24, 320), 620)
+  chatWidth.value = width
+  localStorage.setItem(CHAT_WIDTH_KEY, String(width))
+}
+
+function stopResize() {
+  resizing = false
+  document.body.style.cursor = ''
+  window.removeEventListener('pointermove', onResize)
+  window.removeEventListener('pointerup', stopResize)
+}
+
+function fillPrompt(text) {
+  chatInput.value = text
+}
+
+function scrollChatToBottom() {
+  const node = chatListRef.value
+  if (!node) return
+  node.scrollTop = node.scrollHeight
+}
+
+function buildChatPayload(messages) {
+  const formState = loadModelConfig()
+  return {
+    report: report.value,
+    messages,
+    include_history: includeHistoryContext.value,
+    include_papers: includePapersContext.value,
+    model_config: buildModelConfig(formState),
+  }
+}
+
+function extractErrorText(text) {
+  try {
+    const parsed = JSON.parse(text)
+    return parsed?.detail || parsed?.error || text
+  } catch {
+    return text
+  }
+}
+
+async function streamChatReply(base, payload, userTurns) {
+  const response = await fetch(`${String(base || '').trim().replace(/\/$/, '')}/chat/report/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(extractErrorText(text) || `${response.status} ${response.statusText}`)
+  }
+  if (!response.body) {
+    throw new Error('浏览器不支持流式响应。')
+  }
+
+  const assistantMessage = { role: 'assistant', content: '' }
+  chatMessages.value = [...userTurns, assistantMessage]
+  await nextTick()
+  scrollChatToBottom()
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+
+  const applyEvent = (raw) => {
+    const line = raw.trim()
+    if (!line.startsWith('data:')) return
+    const data = line.slice(5).trim()
+    if (!data || data === '[DONE]') return
+    const payloadObj = JSON.parse(data)
+    if (payloadObj.error) throw new Error(payloadObj.error)
+    const delta = String(payloadObj.delta || '')
+    if (!delta) return
+    assistantMessage.content += delta
+    chatMessages.value = [...userTurns, { ...assistantMessage }]
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() || ''
+    for (const part of parts) applyEvent(part)
+    await nextTick()
+    scrollChatToBottom()
+    if (done) break
+  }
+
+  if (buffer.trim()) applyEvent(buffer)
+  if (!assistantMessage.content.trim()) throw new Error('助手没有返回内容。')
+  chatMessages.value = [...userTurns, { ...assistantMessage }]
+}
+
+async function sendChat() {
+  const message = chatInput.value.trim()
+  if (!message || chatLoading.value || !report.value) return
+
+  const userTurns = [...chatMessages.value, { role: 'user', content: message }]
+  chatMessages.value = userTurns
+  chatInput.value = ''
+  chatLoading.value = true
+  await nextTick()
+  scrollChatToBottom()
+
+  try {
+    await streamChatReply(apiBase.value, buildChatPayload(userTurns), userTurns)
+  } catch (streamError) {
+    try {
+      const data = await callApi(apiBase.value, '/chat/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildChatPayload(userTurns)),
+      }, 240000)
+      const reply = data?.message?.content || '助手没有返回内容。'
+      chatMessages.value = [...userTurns, { role: 'assistant', content: reply }]
+    } catch (error) {
+      const detail = error?.message || streamError?.message || '请求失败'
+      chatMessages.value = [...userTurns, { role: 'assistant', content: `请求失败：${detail}` }]
+    }
+  } finally {
+    chatLoading.value = false
+    await nextTick()
+    scrollChatToBottom()
+  }
+}
 
 async function loadHistoryRecords() {
   try {
-    const data = await callApi(apiBase.value || context.value?.api_base || 'http://localhost:8000', '/history')
+    const base = apiBase.value || context.value?.api_base || 'http://localhost:8000'
+    const data = await callApi(base, '/history')
     historyRecords.value = Array.isArray(data.items) ? data.items : []
   } catch (error) {
     addStatus(`历史记录加载失败：${error.message}`)
@@ -121,7 +333,10 @@ async function loadHistoryRecords() {
 }
 
 function openHistoryRecord(recordId) {
-  router.push({ name: 'results', query: { record_id: recordId, api_base: apiBase.value || context.value?.api_base || 'http://localhost:8000' } })
+  router.push({
+    name: 'results',
+    query: { record_id: recordId, api_base: apiBase.value || context.value?.api_base || 'http://localhost:8000' },
+  })
 }
 
 async function saveCurrentReport() {
@@ -141,12 +356,16 @@ async function loadReport() {
   reportError.value = ''
   report.value = null
   stopPolling()
+  resetChatSession()
+
   if (!context.value?.api_base) {
     addStatus('没有可用的接口地址，请先回到控制台运行一次任务。')
     return
   }
+
   apiBase.value = context.value.api_base
   loading.value = true
+
   try {
     if (context.value.saved_id) {
       activeRecordId.value = context.value.saved_id
@@ -164,6 +383,7 @@ async function loadReport() {
       addStatus('历史记录载入完成。')
     } else if (context.value.paper_id) {
       paperId.value = context.value.paper_id
+      activeRecordId.value = ''
       addStatus(`正在载入最新报告：paper_id=${paperId.value} ...`)
       startPolling()
       await fetchTraces()
@@ -177,11 +397,22 @@ async function loadReport() {
     addStatus(`错误：${error.message}`)
   } finally {
     loading.value = false
+    await nextTick()
+    scrollChatToBottom()
   }
 }
 
-onMounted(() => { loadHistoryRecords() })
+onMounted(() => {
+  loadHistoryRecords()
+  nextTick(scrollChatToBottom)
+})
+
+onBeforeUnmount(() => {
+  stopResize()
+})
+
 watch(() => route.fullPath, loadReport, { immediate: true })
+watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
 </script>
 
 <template>
@@ -194,6 +425,7 @@ watch(() => route.fullPath, loadReport, { immediate: true })
       <div class="topbar-search">历史记录与已保存报告阅读器</div>
       <div class="topbar-actions">
         <span class="status-pill status-pill-live">结果阅读</span>
+        <button class="button button-secondary" @click="toggleChat">{{ chatOpen ? '收起助手' : '打开助手' }}</button>
         <RouterLink class="button button-secondary" :to="{ name: 'task' }">返回控制台</RouterLink>
       </div>
     </header>
@@ -229,72 +461,152 @@ watch(() => route.fullPath, loadReport, { immediate: true })
         </section>
       </aside>
 
-      <main class="workspace-main">
-        <section class="hero-panel panel-soft">
-          <div>
-            <p class="eyebrow">记录详情</p>
-            <h2>报告阅读器</h2>
-            <p class="panel-subtitle">{{ paperMetaLine }}</p>
-          </div>
-          <div class="hero-meta-grid">
-            <div><span class="meta-label">论文 ID</span><strong>{{ paperId || '-' }}</strong></div>
-            <div><span class="meta-label">状态</span><strong>{{ loading ? '载入中' : (report ? '已就绪' : '缺失') }}</strong></div>
-            <div><span class="meta-label">记录 ID</span><strong>{{ activeRecordId || '-' }}</strong></div>
-          </div>
-        </section>
+      <main class="workspace-main workspace-main-span-two">
+        <div class="result-split-shell">
+          <section class="result-report-pane">
+            <section class="hero-panel panel-soft hero-panel-single">
+              <div>
+                <p class="eyebrow">记录详情</p>
+                <h2>报告阅读器</h2>
+                <p class="panel-subtitle">{{ paperMetaLine }}</p>
+              </div>
+              <div class="hero-meta-grid report-meta-grid">
+                <div v-for="item in reportStats" :key="item.label">
+                  <span class="meta-label">{{ item.label }}</span>
+                  <strong>{{ item.value }}</strong>
+                </div>
+              </div>
+              <div class="section-actions">
+                <button class="button button-secondary" @click="saveCurrentReport">保存报告</button>
+              </div>
+            </section>
 
-        <section class="panel-soft">
-          <div class="section-row">
-            <div><p class="eyebrow">工作区标签</p><h3>内容阅读</h3></div>
-            <div class="tab-strip">
-              <span class="tab-pill tab-pill-active">摘要</span>
-              <span class="tab-pill">复现指导</span>
-              <span class="tab-pill">七问回答</span>
-              <span class="tab-pill">Trace</span>
+            <section class="panel-soft">
+              <div class="section-row">
+                <div>
+                  <p class="eyebrow">阅读视图</p>
+                  <h3>报告内容</h3>
+                </div>
+                <div class="reader-tabs">
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'checks' }" @click="activeTab = 'checks'">内容要求检查</button>
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'summary' }" @click="activeTab = 'summary'">摘要</button>
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'reproduction' }" @click="activeTab = 'reproduction'">复现指导</button>
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'qa' }" @click="activeTab = 'qa'">七问回答</button>
+                </div>
+              </div>
+
+              <p v-if="loading" class="empty-state">正在载入报告...</p>
+              <p v-else-if="reportError" class="error-text">{{ reportError }}</p>
+              <p v-else-if="!report" class="empty-state">当前没有可显示的报告。</p>
+
+              <div v-else>
+                <section v-if="activeTab === 'checks'" class="report-section report-section-compact">
+                  <div class="section-row">
+                    <h3>内容要求检查</h3>
+                    <p :class="requirementChecks.every((item) => item.ok) ? 'success-text' : 'error-text'">
+                      {{ requirementChecks.every((item) => item.ok) ? '全部通过' : '仍有缺项' }}
+                    </p>
+                  </div>
+                  <div class="checks-grid">
+                    <div v-for="item in requirementChecks" :key="item.key" class="check-card">
+                      <strong>{{ item.title }}</strong>
+                      <p class="check-card-status" :class="item.ok ? 'success-text' : 'error-text'">{{ item.ok ? '通过' : '未达标' }}</p>
+                      <p>{{ item.actual }} / {{ item.min }}</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section v-if="activeTab === 'summary'" class="reader-stack">
+                  <article v-for="block in summaryBlocks" :key="block.title" class="report-section report-section-compact">
+                    <h3>{{ block.title }}</h3>
+                    <pre v-if="block.type === 'text'">{{ block.value }}</pre>
+                    <ul v-else class="bullet-list">
+                      <li v-for="item in asArray(block.value)" :key="String(item)">{{ item }}</li>
+                    </ul>
+                  </article>
+                </section>
+
+                <section v-if="activeTab === 'reproduction'" class="reader-stack">
+                  <article v-for="block in reproductionBlocks" :key="block.title" class="report-section report-section-compact">
+                    <h3>{{ block.title }}</h3>
+                    <pre v-if="block.type === 'text'">{{ block.value }}</pre>
+                    <ul v-else class="bullet-list">
+                      <li v-for="item in asArray(block.value)" :key="String(item)">{{ item }}</li>
+                    </ul>
+                  </article>
+                </section>
+
+                <section v-if="activeTab === 'qa'" class="qa-reader-layout qa-reader-layout-wide">
+                  <aside class="qa-nav">
+                    <button v-for="item in questionMeta" :key="item.key" class="qa-nav-item" :class="{ 'qa-nav-item-active': activeQuestionKey === item.key }" @click="activeQuestionKey = item.key">
+                      <strong>{{ item.title }}</strong>
+                      <span>{{ item.short }}</span>
+                    </button>
+                  </aside>
+                  <article class="report-section report-section-compact qa-content-card">
+                    <h3>{{ activeQuestion.title }}：{{ activeQuestion.short }}</h3>
+                    <pre>{{ activeQuestion.value }}</pre>
+                  </article>
+                </section>
+              </div>
+            </section>
+          </section>
+
+          <div v-if="chatOpen" class="result-chat-resizer" @pointerdown="startResize"></div>
+
+          <aside v-if="chatOpen" class="result-chat-pane panel-soft" :style="{ width: `${chatWidth}px` }">
+            <div class="chat-header">
+              <div>
+                <p class="eyebrow">AI 助手</p>
+                <h3>报告对话</h3>
+              </div>
+              <div class="chat-header-actions">
+                <button class="button button-secondary" @click="clearChat">清空会话</button>
+                <button class="button button-secondary" @click="toggleChat">收起</button>
+              </div>
             </div>
-          </div>
 
-          <p v-if="loading" class="empty-state">正在载入报告...</p>
-          <p v-else-if="reportError" class="error-text">{{ reportError }}</p>
-          <p v-else-if="!report" class="empty-state">当前没有可显示的报告。</p>
+            <div class="chat-context-strip">
+              <label class="chat-context-toggle">
+                <input v-model="includeHistoryContext" type="checkbox" />
+                <span>带入历史记录</span>
+              </label>
+              <label class="chat-context-toggle">
+                <input v-model="includePapersContext" type="checkbox" />
+                <span>带入论文库</span>
+              </label>
+              <span class="sidebar-meta">上下文：{{ chatContextSummary }}</span>
+            </div>
 
-          <div v-else class="report-layout">
-            <section class="report-section report-section-compact">
-              <div class="section-header">
-                <h3>内容要求检查</h3>
-                <p :class="requirementChecks.every((item) => item.ok) ? 'success-text' : 'error-text'">{{ requirementChecks.every((item) => item.ok) ? '全部通过' : '仍有缺项' }}</p>
+            <div class="chat-quick-actions">
+              <button class="chat-quick-button" @click="fillPrompt('请总结这篇论文最重要的创新点。')">总结创新点</button>
+              <button class="chat-quick-button" @click="fillPrompt('请把复现指导整理成执行步骤。')">整理复现步骤</button>
+              <button class="chat-quick-button" @click="fillPrompt('请指出当前报告还缺哪些关键信息。')">指出缺项</button>
+              <button class="chat-quick-button" @click="fillPrompt('请结合历史记录和论文库，告诉我这篇论文和过去记录最接近的方向与差异。')">结合历史与论文库</button>
+            </div>
+
+            <div ref="chatListRef" class="chat-message-list">
+              <div v-for="(message, index) in chatMessages" :key="`${message.role}-${index}`" class="chat-message" :class="message.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'">
+                <p class="chat-role">{{ message.role === 'user' ? '我' : 'AI 助手' }}</p>
+                <div class="chat-bubble">
+                  <pre>{{ message.content }}</pre>
+                </div>
               </div>
-              <ul class="check-list">
-                <li v-for="item in requirementChecks" :key="item.key">
-                  <strong>{{ item.key }}</strong>
-                  <span :class="item.ok ? 'success-text' : 'error-text'">{{ item.ok ? '通过' : '未达标' }}</span>
-                  <span>（{{ item.actual }}/{{ item.min }}）</span>
-                </li>
-              </ul>
-            </section>
+            </div>
 
-            <section v-for="section in reportSections" :key="section.title" class="report-section report-section-compact">
-              <h3>{{ section.title }}</h3>
-              <div class="report-blocks">
-                <article v-for="block in section.blocks" :key="block.label" class="report-block">
-                  <h4>{{ block.label }}</h4>
-                  <pre v-if="block.type === 'text'">{{ block.value }}</pre>
-                  <ul v-else class="bullet-list"><li v-for="item in asArray(block.value)" :key="String(item)">{{ item }}</li></ul>
-                </article>
+            <div class="chat-input-area">
+              <textarea v-model="chatInput" class="chat-textarea" rows="5" placeholder="基于当前报告向 AI 提问..." @keydown.ctrl.enter.prevent="sendChat" />
+              <div class="chat-input-actions">
+                <span class="sidebar-meta">{{ chatLoading ? '正在流式生成回答...' : `Ctrl + Enter 发送 · ${chatContextSummary}` }}</span>
+                <button class="button button-primary" :disabled="chatLoading || !report" @click="sendChat">发送</button>
               </div>
-            </section>
-          </div>
-        </section>
+            </div>
+          </aside>
+        </div>
       </main>
-
-      <aside class="workspace-detail">
-        <section class="panel-soft detail-panel">
-          <div class="section-row"><div><p class="eyebrow">记录快照</p><h3>摘要信息</h3></div></div>
-          <div class="summary-list"><div v-for="item in reportStats" :key="item.label" class="summary-row"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div></div>
-          <div class="button-column" style="margin-top: 12px;"><button class="button button-secondary" @click="saveCurrentReport">保存报告</button></div>
-        </section>
-      </aside>
     </div>
+
+    <button v-if="!chatOpen" class="chat-collapsed-handle" @click="openChat">打开 AI 助手</button>
 
     <RunDiagnosticsPanel :statuses="statuses" :traces="traces" :trace-error="traceError" :compact="true" empty-trace-message="有可用 trace 时，会显示在这里。" />
   </div>
