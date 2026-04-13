@@ -254,15 +254,17 @@ onMounted(() => {
   <div class="workspace-shell">
     <header class="topbar">
       <div class="brand-block">
-        <p class="eyebrow">鐮旂┒杩愯鎺у埗鍙</p>
-        <h1>AI 璁烘枃鏁欑粌</h1>
+        <p class="eyebrow">研究运行控制台</p>
+        <h1>AI 论文教练</h1>
       </div>
-      <div class="topbar-search">鎼滅储璁烘枃銆佸巻鍙茶褰曞拰鏈湴鏂囦欢璧勬簮</div>
+      <div class="topbar-search">搜索论文、历史记录和本地文件资源</div>
       <div class="topbar-actions">
         <span class="status-pill" :class="isRunning ? 'status-pill-live' : 'status-pill-idle'">
-          {{ isRunning ? '运行中...' : '开始运行' }}
+          {{ isRunning ? '任务运行中' : '系统待命' }}
         </span>
-        <button class="button button-secondary" :disabled="checkingApi" @click="handleCheckApiConnection">{{ checkingApi ? '验证中...' : '验证 API 连通' }}</button>
+        <button class="button button-secondary" :disabled="checkingApi" @click="handleCheckApiConnection">
+          {{ checkingApi ? '验证中...' : '验证 API 连通' }}
+        </button>
         <button class="button button-secondary" @click="handleValidateConfig">检测模型接口</button>
         <button class="button button-primary" :disabled="isRunning" @click="runPipeline">
           {{ isRunning ? '运行中...' : '开始运行' }}
@@ -273,20 +275,20 @@ onMounted(() => {
     <div class="workspace-grid">
       <aside class="workspace-sidebar">
         <section class="sidebar-section">
-          <p class="sidebar-title">瀵艰埅</p>
+          <p class="sidebar-title">导航</p>
           <div class="nav-list">
-            <RouterLink class="nav-item nav-item-active" :to="{ name: 'task' }">鎺у埗鍙</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'history', query: { api_base: form.apiBase } }">鍘嗗彶璁板綍</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'saved', query: { api_base: form.apiBase } }">宸蹭繚瀛樻姤鍛</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'uploads', query: { api_base: form.apiBase } }">涓婁紶鏂囦欢</RouterLink>
-            <RouterLink class="nav-item" :to="{ name: 'cache', query: { api_base: form.apiBase } }">缂撳瓨璧勬簮</RouterLink>
+            <RouterLink class="nav-item nav-item-active" :to="{ name: 'task' }">控制台</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'history', query: { api_base: form.apiBase } }">历史记录</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'saved', query: { api_base: form.apiBase } }">已保存报告</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'uploads', query: { api_base: form.apiBase } }">上传文件</RouterLink>
+            <RouterLink class="nav-item" :to="{ name: 'cache', query: { api_base: form.apiBase } }">缓存资源</RouterLink>
           </div>
         </section>
 
         <section class="sidebar-section">
           <div class="section-row">
-            <p class="sidebar-title">鏈€杩戝巻鍙</p>
-            <span class="sidebar-meta">{{ historyRecords.length }} 鏉</span>
+            <p class="sidebar-title">最近历史</p>
+            <span class="sidebar-meta">{{ historyRecords.length }} 条</span>
           </div>
           <div class="history-list">
             <button v-for="item in historyRecords" :key="item.record_id" class="history-item button-plain" @click="openHistoryRecord(item.record_id)">
@@ -296,7 +298,7 @@ onMounted(() => {
               </div>
               <span class="history-dot"></span>
             </button>
-            <div v-if="!historyRecords.length" class="history-empty">杩樻病鏈夊巻鍙茶褰曘€</div>
+            <div v-if="!historyRecords.length" class="history-empty">还没有历史记录。</div>
           </div>
         </section>
       </aside>
@@ -304,22 +306,22 @@ onMounted(() => {
       <main class="workspace-main">
         <section class="hero-panel panel-soft">
           <div>
-            <p class="eyebrow">褰撳墠浼氳瘽</p>
-            <h2>璁烘枃鎺у埗鍙</h2>
-            <p class="panel-subtitle">瀵煎叆璁烘枃銆侀厤缃弻妯″瀷銆佹墽琛屽畬鏁存祦姘寸嚎锛屽苟鎶婃瘡娆＄粨鏋滀繚瀛樺埌鏈湴鍘嗗彶涓€</p>
+            <p class="eyebrow">当前会话</p>
+            <h2>论文控制台</h2>
+            <p class="panel-subtitle">导入论文、配置双模型、执行完整流水线，并把每次结果保存到本地历史中。</p>
           </div>
           <div class="hero-meta-grid">
             <div>
-              <span class="meta-label">褰撳墠璁烘枃 ID</span>
+              <span class="meta-label">当前论文 ID</span>
               <strong>{{ currentPaperId || '-' }}</strong>
             </div>
             <div>
-              <span class="meta-label">杩愯妯″紡</span>
+              <span class="meta-label">运行模式</span>
               <strong>{{ form.runMode || 'deep' }}</strong>
             </div>
             <div>
-              <span class="meta-label">杈撳叆鏉ユ簮</span>
-              <strong>{{ paperFile ? '涓婁紶 PDF' : (form.paperUrl ? '杩滅▼閾炬帴' : '鏈€夋嫨') }}</strong>
+              <span class="meta-label">输入来源</span>
+              <strong>{{ paperFile ? '上传 PDF' : (form.paperUrl ? '远程链接' : '未选择') }}</strong>
             </div>
           </div>
         </section>
@@ -327,8 +329,8 @@ onMounted(() => {
         <section class="panel-soft">
           <div class="section-row">
             <div>
-              <p class="eyebrow">娴佹按绾</p>
-              <h3>闃舵杩涘害</h3>
+              <p class="eyebrow">流水线</p>
+              <h3>阶段进度</h3>
             </div>
           </div>
           <div class="pipeline-row">
@@ -342,29 +344,29 @@ onMounted(() => {
         <section class="panel-soft">
           <div class="section-row">
             <div>
-              <p class="eyebrow">浠诲姟杈撳叆</p>
-              <h3>杩愯鍙傛暟</h3>
+              <p class="eyebrow">任务输入</p>
+              <h3>运行参数</h3>
             </div>
           </div>
           <div class="form-grid control-grid">
             <label class="field span-two">
-              <span>鍚庣鎺ュ彛鍦板潃</span>
+              <span>后端接口地址</span>
               <input v-model="form.apiBase" autocomplete="off" />
             </label>
             <label class="field span-two">
-              <span>璁烘枃閾炬帴</span>
-              <input v-model="form.paperUrl" placeholder="arXiv 閾炬帴鎴栫洿鎺?PDF 閾炬帴" autocomplete="off" />
+              <span>论文链接</span>
+              <input v-model="form.paperUrl" placeholder="arXiv 链接或直接 PDF 链接" autocomplete="off" />
             </label>
             <label class="field">
-              <span>涓婁紶 PDF</span>
+              <span>上传 PDF</span>
               <input type="file" accept="application/pdf" @change="onFileChange" />
             </label>
             <label class="field">
-              <span>杩愯妯″紡</span>
+              <span>运行模式</span>
               <select v-model="form.runMode">
-                <option value="deep">绮捐妯″紡</option>
-                <option value="full">鍏ㄩ噺妯″紡</option>
-                <option value="fast">蹇€熸ā寮</option>
+                <option value="deep">精读模式</option>
+                <option value="full">全量模式</option>
+                <option value="fast">快速模式</option>
               </select>
             </label>
           </div>
@@ -375,39 +377,39 @@ onMounted(() => {
         <section class="panel-soft detail-panel">
           <div class="section-row">
             <div>
-              <p class="eyebrow">杩愯閰嶇疆</p>
-              <h3>妯″瀷涓庡瘑閽</h3>
+              <p class="eyebrow">运行配置</p>
+              <h3>模型与密钥</h3>
             </div>
           </div>
           <div class="detail-stack">
             <label class="field">
-              <span>妯″瀷 A 鎺ュ彛鍦板潃</span>
+              <span>模型 A 接口地址</span>
               <input v-model="form.qwenBase" autocomplete="off" />
             </label>
             <label class="field">
-              <span>妯″瀷 A 瀵嗛挜</span>
+              <span>模型 A 密钥</span>
               <input v-model="form.qwenKey" type="password" autocomplete="off" />
             </label>
             <label class="field">
-              <span>妯″瀷 A 鍚嶇О</span>
+              <span>模型 A 名称</span>
               <input v-model="form.qwenModel" autocomplete="off" />
             </label>
             <label class="field">
-              <span>妯″瀷 B 鎺ュ彛鍦板潃</span>
+              <span>模型 B 接口地址</span>
               <input v-model="form.minimaxBase" autocomplete="off" />
             </label>
             <label class="field">
-              <span>妯″瀷 B 瀵嗛挜</span>
+              <span>模型 B 密钥</span>
               <input v-model="form.minimaxKey" type="password" autocomplete="off" />
             </label>
             <label class="field">
-              <span>妯″瀷 B 鍚嶇О</span>
+              <span>模型 B 名称</span>
               <input v-model="form.minimaxModel" autocomplete="off" />
             </label>
           </div>
           <div class="button-column">
-            <button class="button button-secondary" @click="handleSaveConfig">淇濆瓨閰嶇疆</button>
-            <button class="button button-secondary" @click="handleClearConfig">娓呯┖閰嶇疆</button>
+            <button class="button button-secondary" @click="handleSaveConfig">保存配置</button>
+            <button class="button button-secondary" @click="handleClearConfig">清空配置</button>
           </div>
         </section>
       </aside>
@@ -424,13 +426,3 @@ onMounted(() => {
     </div>
   </div>
 </template>
-
-
-
-
-
-
-
-
-
-
