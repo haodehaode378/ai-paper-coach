@@ -330,6 +330,12 @@ button {
   color: var(--text);
 }
 
+.button-danger {
+  background: rgba(176, 40, 40, 0.10);
+  color: #7a1f1f;
+  border-color: rgba(176, 40, 40, 0.55);
+}
+
 .report-section {
   min-width: 0;
   max-width: 100%;
@@ -606,19 +612,39 @@ button {
 
 .qa-nav {
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .qa-nav-item {
-  padding: 12px;
+  width: 100%;
+  height: 66px;
+  padding: 8px 10px;
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.28);
+  text-align: left;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.qa-nav-item strong {
+  display: block;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .qa-nav-item span {
   display: block;
-  margin-top: 4px;
   color: var(--muted);
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .qa-nav-item-active {
@@ -671,16 +697,26 @@ button {
 
 .qa-nav-item {
   width: 100%;
-  padding: 12px;
+  height: 66px;
+  padding: 8px 10px;
   border: 1px solid var(--border-soft);
   background: rgba(255, 255, 255, 0.28);
   text-align: left;
   color: var(--text);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
 }
 
 @media (max-width: 980px) {
   .qa-reader-layout-wide {
     grid-template-columns: 1fr;
+  }
+
+  .qa-nav-item {
+    height: 62px;
   }
 }
 .reader-stack > * {
@@ -923,4 +959,50 @@ button {
   width: 100%;
   height: auto;
   background: #fff;
+}
+
+
+/* Seven-question horizontal selector */
+.qa-reader-layout-horizontal {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.qa-nav-horizontal {
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.qa-nav-horizontal .qa-nav-item {
+  height: 62px;
+  min-width: 0;
+  padding: 8px 8px;
+  align-items: center;
+  text-align: center;
+}
+
+.qa-nav-horizontal .qa-nav-item strong,
+.qa-nav-horizontal .qa-nav-item span {
+  width: 100%;
+}
+
+@media (max-width: 1280px) {
+  .qa-nav-horizontal {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .qa-nav-horizontal {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(140px, 140px);
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 4px;
+  }
+
+  .qa-nav-horizontal .qa-nav-item {
+    height: 60px;
+  }
 }

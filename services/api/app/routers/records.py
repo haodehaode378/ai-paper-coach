@@ -7,6 +7,8 @@ from app.core.storage import get_paper
 from app.core.history_store import (
     CACHE_ROOT,
     UPLOADS_ROOT,
+    delete_history_record,
+    delete_saved_record,
     list_history_records,
     list_local_files,
     list_saved_records,
@@ -31,6 +33,14 @@ def history_detail(record_id: str):
     return record
 
 
+@router.delete("/history/{record_id}")
+def history_delete(record_id: str):
+    ok = delete_history_record(record_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="history record not found")
+    return {"ok": True, "record_id": record_id}
+
+
 @router.get("/saved")
 def saved_list():
     return {"items": list_saved_records()}
@@ -50,6 +60,14 @@ def saved_detail(record_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="saved record not found")
     return record
+
+
+@router.delete("/saved/{record_id}")
+def saved_delete(record_id: str):
+    ok = delete_saved_record(record_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="saved record not found")
+    return {"ok": True, "record_id": record_id}
 
 
 @router.get("/files/uploads")

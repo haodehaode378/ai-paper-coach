@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import analyze, chat, export, ingest, records
@@ -19,6 +19,14 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:
         init_db()
+
+    @app.get("/health")
+    def health() -> dict[str, object]:
+        return {
+            "ok": True,
+            "service": app.title,
+            "version": app.version,
+        }
 
     app.include_router(ingest.router)
     app.include_router(analyze.router)

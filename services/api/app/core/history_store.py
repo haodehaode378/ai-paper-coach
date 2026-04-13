@@ -101,3 +101,18 @@ def list_local_files(kind: str) -> list[dict[str, Any]]:
             }
         )
     return items
+
+def _delete_json_record(root: Path, record_id: str) -> bool:
+    path = _json_path(root, record_id)
+    if not path.exists() or not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
+def delete_history_record(record_id: str) -> bool:
+    return _delete_json_record(HISTORY_ROOT, record_id)
+
+
+def delete_saved_record(record_id: str) -> bool:
+    return _delete_json_record(SAVED_ROOT, record_id)

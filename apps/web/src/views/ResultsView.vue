@@ -658,8 +658,8 @@ watch(pdfPage, async () => {
                   </article>
                 </section>
 
-                <section v-if="activeTab === 'qa'" class="qa-reader-layout qa-reader-layout-wide">
-                  <aside class="qa-nav">
+                <section v-if="activeTab === 'qa'" class="qa-reader-layout qa-reader-layout-wide qa-reader-layout-horizontal">
+                  <aside class="qa-nav qa-nav-horizontal">
                     <button v-for="item in questionMeta" :key="item.key" class="qa-nav-item" :class="{ 'qa-nav-item-active': activeQuestionKey === item.key }" @click="activeQuestionKey = item.key">
                       <strong>{{ item.title }}</strong>
                       <span>{{ item.short }}</span>
