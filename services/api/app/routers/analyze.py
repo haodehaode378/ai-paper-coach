@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.core.chunker import split_sections, top_chunks
 from app.core.model_router import ModelRouter
 from app.core.orchestrator import generate_draft, get_requirement_issues, normalize_report, patch_draft, review_draft
 from app.core.history_store import CACHE_ROOT as HISTORY_CACHE_ROOT, list_history_records, load_history_record, save_history_record
 from app.core.parser import parse_pdf_file, parse_url
-from app.core.schemas import AnalyzeRequest, FinalizeRequest, ReviewRequest, ValidateModelsRequest
+from app.core.schemas import AnalyzeRequest, FinalizeRequest, PipelineStartRequest, ReviewRequest, ValidateModelsRequest
 from app.core.storage import (
     append_llm_trace,
     create_run,
@@ -26,12 +31,117 @@ from app.core.storage import (
     save_parse,
     save_review,
     update_run_status,
+    now_iso,
 )
 
 router = APIRouter(tags=["pipeline"])
 
 CACHE_ROOT = Path(HISTORY_CACHE_ROOT)
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+
+PIPELINE_JOBS: dict[str, dict[str, Any]] = {}
+PIPELINE_JOBS_LOCK = threading.Lock()
+PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline-job")
+
+
+def _new_job_payload(*, job_id: str, paper_id: str, mode: str, strict: bool) -> dict[str, Any]:
+    return {
+        "job_id": job_id,
+        "paper_id": paper_id,
+        "mode": mode,
+        "strict": strict,
+        "status": "running",
+        "current_stage": "pending",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "error": None,
+        "result": None,
+        "events": [],
+        "next_event_id": 1,
+    }
+
+
+def _append_job_event(job: dict[str, Any], *, event_type: str, stage: str | None = None, message: str | None = None, data: Any = None) -> None:
+    event = {
+        "id": job["next_event_id"],
+        "type": event_type,
+        "stage": stage,
+        "message": message,
+        "data": data,
+        "ts": now_iso(),
+    }
+    job["next_event_id"] += 1
+    job["events"].append(event)
+    if len(job["events"]) > 500:
+        job["events"] = job["events"][-500:]
+    job["updated_at"] = now_iso()
+
+
+def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": job["job_id"],
+        "paper_id": job["paper_id"],
+        "mode": job["mode"],
+        "strict": job["strict"],
+        "status": job["status"],
+        "current_stage": job["current_stage"],
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+        "error": job["error"],
+        "result": job["result"],
+        "events": list(job["events"]),
+    }
+
+
+def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
+    with PIPELINE_JOBS_LOCK:
+        job = PIPELINE_JOBS.get(job_id)
+    if not job:
+        return
+
+    try:
+        with PIPELINE_JOBS_LOCK:
+            job["current_stage"] = "analyze"
+            _append_job_event(job, event_type="stage_started", stage="analyze", message="\u5f00\u59cb\u6267\u884c\u5206\u6790\u9636\u6bb5")
+
+        analyze_result = analyze(AnalyzeRequest(paper_id=req.paper_id, mode=req.mode, model_config=req.llm_config))
+
+        with PIPELINE_JOBS_LOCK:
+            _append_job_event(job, event_type="stage_completed", stage="analyze", data=analyze_result)
+
+        if req.mode != "fast":
+            with PIPELINE_JOBS_LOCK:
+                job["current_stage"] = "review"
+                _append_job_event(job, event_type="stage_started", stage="review", message="\u5f00\u59cb\u6267\u884c\u5ba1\u9605\u9636\u6bb5")
+
+            review_result = review(ReviewRequest(paper_id=req.paper_id, model_config=req.llm_config))
+
+            with PIPELINE_JOBS_LOCK:
+                _append_job_event(job, event_type="stage_completed", stage="review", data=review_result)
+
+            with PIPELINE_JOBS_LOCK:
+                job["current_stage"] = "finalize"
+                _append_job_event(job, event_type="stage_started", stage="finalize", message="\u5f00\u59cb\u6267\u884c\u6574\u7406\u9636\u6bb5")
+
+            finalize_result = finalize(FinalizeRequest(paper_id=req.paper_id, strict=req.strict or req.mode == "strict", model_config=req.llm_config))
+
+            with PIPELINE_JOBS_LOCK:
+                _append_job_event(job, event_type="stage_completed", stage="finalize", data=finalize_result)
+
+        run = get_latest_run(req.paper_id)
+        with PIPELINE_JOBS_LOCK:
+            job["status"] = "completed"
+            job["current_stage"] = "done"
+            job["result"] = {
+                "paper_id": req.paper_id,
+                "run_id": (run or {}).get("id"),
+            }
+            _append_job_event(job, event_type="completed", stage="done", data=job["result"])
+    except Exception as exc:
+        with PIPELINE_JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+            _append_job_event(job, event_type="failed", stage=job.get("current_stage"), message=str(exc))
 
 
 def _merge_report_for_display(
@@ -385,3 +495,69 @@ def history_detail(record_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="history record not found")
     return record
+
+@router.post("/pipeline/start")
+def pipeline_start(req: PipelineStartRequest):
+    paper = get_paper(req.paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="paper not found")
+
+    job_id = str(uuid.uuid4())
+    job = _new_job_payload(job_id=job_id, paper_id=req.paper_id, mode=req.mode, strict=req.strict)
+    with PIPELINE_JOBS_LOCK:
+        PIPELINE_JOBS[job_id] = job
+        _append_job_event(job, event_type="queued", stage="pending", message="\u4efb\u52a1\u5df2\u5165\u961f\uff0c\u7b49\u5f85\u540e\u53f0\u6267\u884c")
+
+    PIPELINE_EXECUTOR.submit(_run_pipeline_job, job_id, req)
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "paper_id": req.paper_id,
+        "mode": req.mode,
+    }
+
+
+@router.get("/pipeline/jobs/{job_id}")
+def pipeline_job_status(job_id: str):
+    with PIPELINE_JOBS_LOCK:
+        job = PIPELINE_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="pipeline job not found")
+        return _job_snapshot(job)
+
+
+@router.get("/pipeline/jobs/{job_id}/events")
+def pipeline_job_events(job_id: str):
+    def event_stream():
+        cursor = 0
+        while True:
+            with PIPELINE_JOBS_LOCK:
+                job = PIPELINE_JOBS.get(job_id)
+                if not job:
+                    payload = {"type": "failed", "message": "pipeline job not found", "ts": now_iso()}
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    break
+
+                events = list(job["events"])
+                status = job["status"]
+
+            while cursor < len(events):
+                payload = events[cursor]
+                cursor += 1
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            if status in {"completed", "failed"}:
+                yield "data: [DONE]\n\n"
+                break
+
+            time.sleep(0.7)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

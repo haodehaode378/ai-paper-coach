@@ -14,9 +14,8 @@ import {
 } from '../lib/storage'
 import { useTraceHistory } from '../composables/useTraceHistory'
 
-const TIMEOUT_ANALYZE_MS = 480000
-const TIMEOUT_REVIEW_MS = 600000
-const TIMEOUT_FINALIZE_MS = 1200000
+const JOB_POLL_INTERVAL_MS = 1500
+const JOB_POLL_TIMEOUT_MS = 1800000
 
 const router = useRouter()
 const form = ref(loadModelConfig())
@@ -170,40 +169,107 @@ function emitStageMessages(data, fallbackStage) {
   }
 }
 
-async function runAnalyze(paperId, mode, modelConfig) {
-  addStatus(`开始执行分析阶段（${mode}）...`)
-  const data = await callApi(form.value.apiBase, '/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paper_id: paperId, mode, model_config: modelConfig })
-  }, TIMEOUT_ANALYZE_MS)
-  stageState.value.analyze = true
-  addStatus('分析阶段完成。')
-  emitStageMessages(data, 'analyze')
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
 }
 
-async function runReview(paperId, modelConfig) {
-  addStatus('开始执行审阅阶段...')
-  const data = await callApi(form.value.apiBase, '/review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paper_id: paperId, model_config: modelConfig })
-  }, TIMEOUT_REVIEW_MS)
-  stageState.value.review = true
-  addStatus('审阅阶段完成。')
-  emitStageMessages(data, 'review')
+function consumePipelineEvents(events, seenEventIds) {
+  for (const event of Array.isArray(events) ? events : []) {
+    const eventId = Number(event?.id || 0)
+    if (eventId > 0 && seenEventIds.has(eventId)) continue
+    if (eventId > 0) seenEventIds.add(eventId)
+
+    const stage = event?.stage
+    const message = event?.message
+    if (message) addStatus(message)
+
+    if (event?.type === 'stage_started' && stage) {
+      addStatus(`\u9636\u6bb5\u5f00\u59cb\uff1a${stage}`)
+    }
+
+    if (event?.type === 'stage_completed' && stage) {
+      if (Object.prototype.hasOwnProperty.call(stageState.value, stage)) {
+        stageState.value[stage] = true
+      }
+      addStatus(`\u9636\u6bb5\u5b8c\u6210\uff1a${stage}`)
+      emitStageMessages(event?.data || {}, stage)
+    }
+
+    if (event?.type === 'failed') {
+      addStatus(`\u540e\u53f0\u4efb\u52a1\u5931\u8d25\uff1a${message || '\u672a\u77e5\u9519\u8bef'}`)
+    }
+
+    if (event?.type === 'completed') {
+      addStatus('\u540e\u53f0\u4efb\u52a1\u6267\u884c\u5b8c\u6210\u3002')
+    }
+  }
 }
 
-async function runFinalize(paperId, mode, modelConfig) {
-  addStatus('开始执行整理阶段...')
-  const data = await callApi(form.value.apiBase, '/finalize', {
+async function startPipelineJob(paperId, mode, modelConfig) {
+  addStatus('\u6b63\u5728\u63d0\u4ea4\u540e\u53f0\u5f02\u6b65\u4efb\u52a1...')
+  const data = await callApi(form.value.apiBase, '/pipeline/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paper_id: paperId, strict: mode === 'strict', model_config: modelConfig })
-  }, TIMEOUT_FINALIZE_MS)
-  stageState.value.finalize = true
-  addStatus('整理阶段完成。')
-  emitStageMessages(data, 'finalize')
+    body: JSON.stringify({
+      paper_id: paperId,
+      mode,
+      strict: mode === 'strict',
+      model_config: modelConfig
+    })
+  })
+
+  const jobId = data?.job_id
+  if (!jobId) throw new Error('\u4efb\u52a1\u63d0\u4ea4\u6210\u529f\uff0c\u4f46\u540e\u7aef\u672a\u8fd4\u56de job_id\u3002')
+
+  addStatus(`\u4efb\u52a1\u5df2\u63d0\u4ea4\uff1ajob_id=${jobId}`)
+  return jobId
+}
+
+async function waitPipelineJob(jobId) {
+  const startAt = Date.now()
+  const seenEventIds = new Set()
+  let warnedRetry = false
+
+  while (true) {
+    if (Date.now() - startAt > JOB_POLL_TIMEOUT_MS) {
+      throw new Error(`\u540e\u53f0\u4efb\u52a1\u7b49\u5f85\u8d85\u65f6\uff08${Math.floor(JOB_POLL_TIMEOUT_MS / 1000)} \u79d2\uff09`)
+    }
+
+    let snapshot
+    try {
+      snapshot = await callApi(
+        form.value.apiBase,
+        `/pipeline/jobs/${encodeURIComponent(jobId)}`,
+        {},
+        30000
+      )
+      warnedRetry = false
+    } catch (error) {
+      if (isTimeoutError(error)) {
+        if (!warnedRetry) {
+          addStatus('\u4efb\u52a1\u72b6\u6001\u62c9\u53d6\u8d85\u65f6\uff0c\u6b63\u5728\u81ea\u52a8\u91cd\u8bd5...')
+          warnedRetry = true
+        }
+        await sleep(1000)
+        continue
+      }
+      throw error
+    }
+
+    consumePipelineEvents(snapshot?.events, seenEventIds)
+
+    if (snapshot?.status === 'completed') {
+      return snapshot?.result || null
+    }
+
+    if (snapshot?.status === 'failed') {
+      throw new Error(snapshot?.error || '\u540e\u53f0\u4efb\u52a1\u6267\u884c\u5931\u8d25')
+    }
+
+    await sleep(JOB_POLL_INTERVAL_MS)
+  }
 }
 
 async function runPipeline() {
@@ -215,30 +281,32 @@ async function runPipeline() {
 
     const mode = form.value.runMode || 'deep'
     const modelConfig = currentModelConfig()
-    addStatus(`本次配置：模型 A=${modelConfig.primary.model} | 模型 B=${modelConfig.secondary.model} | 模式=${mode}`)
+    addStatus(`\u672c\u6b21\u914d\u7f6e\uff1a\u6a21\u578b A=${modelConfig.primary.model} | \u6a21\u578b B=${modelConfig.secondary.model} | \u6a21\u5f0f=${mode}`)
 
     const paperId = await ingest()
-    await runAnalyze(paperId, mode, modelConfig)
+    const jobId = await startPipelineJob(paperId, mode, modelConfig)
+    const result = await waitPipelineJob(jobId)
 
-    if (mode !== 'fast') {
-      await runReview(paperId, modelConfig)
-      await runFinalize(paperId, mode, modelConfig)
+    if (mode === 'fast' && stageState.value.analyze) {
+      stageState.value.review = false
+      stageState.value.finalize = false
     }
 
     stopPolling()
     await loadHistoryRecords()
-    saveLastResult({ paper_id: paperId, api_base: form.value.apiBase })
-    await router.push({ name: 'results', query: { paper_id: paperId, api_base: form.value.apiBase } })
+
+    const resultPaperId = result?.paper_id || paperId
+    saveLastResult({ paper_id: resultPaperId, api_base: form.value.apiBase })
+    await router.push({ name: 'results', query: { paper_id: resultPaperId, api_base: form.value.apiBase } })
   } catch (error) {
-    if (isTimeoutError(error) && currentPaperId.value) {
-      addStatus(error.message)
-      addStatus('后端可能仍在处理中，正在跳转到结果页继续查看。')
+    if (currentPaperId.value) {
+      addStatus(`\u9519\u8bef\uff1a${error.message}`)
+      addStatus('\u53ef\u4ee5\u7a0d\u540e\u5728\u5386\u53f2\u8bb0\u5f55\u6216\u7ed3\u679c\u9875\u7ee7\u7eed\u67e5\u770b\u4efb\u52a1\u72b6\u6001\u3002')
       saveLastResult({ paper_id: currentPaperId.value, api_base: form.value.apiBase })
-      await router.push({ name: 'results', query: { paper_id: currentPaperId.value, api_base: form.value.apiBase } })
-      return
+    } else {
+      addStatus(`\u9519\u8bef\uff1a${error.message}`)
     }
     stopPolling()
-    addStatus(`错误：${error.message}`)
   } finally {
     isRunning.value = false
   }

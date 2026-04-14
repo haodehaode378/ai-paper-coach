@@ -50,5 +50,14 @@ class ValidateModelsRequest(BaseModel):
     llm_config: ModelConfig | None = Field(default=None, alias="model_config")
 
 
+class PipelineStartRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    paper_id: str
+    mode: str = Field(default="deep")
+    strict: bool = False
+    llm_config: ModelConfig | None = Field(default=None, alias="model_config")
+
+
 class IngestJSONRequest(BaseModel):
     url: str

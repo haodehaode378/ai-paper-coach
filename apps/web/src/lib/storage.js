@@ -1,4 +1,5 @@
 export const STORAGE_KEY = 'apc_model_config_v1'
+export const SESSION_SECRET_KEY = 'apc_model_secrets_session_v1'
 export const LAST_RESULT_KEY = 'apc_last_result_v1'
 export const TRACE_HISTORY_KEY = 'apc_trace_history_v1'
 
@@ -13,6 +14,36 @@ export const defaultFormState = () => ({
   minimaxKey: '',
   minimaxModel: 'MiniMax-M2.5'
 })
+
+function readJson(storage, key) {
+  try {
+    const raw = storage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function writeJson(storage, key, value) {
+  storage.setItem(key, JSON.stringify(value))
+}
+
+function sanitizeConfig(config) {
+  const next = JSON.parse(JSON.stringify(config || {}))
+  for (const providerKey of ['primary', 'secondary', 'provider_a', 'provider_b', 'qwen', 'minimax']) {
+    if (next?.[providerKey] && typeof next[providerKey] === 'object') {
+      delete next[providerKey].api_key
+    }
+  }
+  return next
+}
+
+function buildSessionSecrets(form) {
+  return {
+    qwenKey: String(form.qwenKey || '').trim(),
+    minimaxKey: String(form.minimaxKey || '').trim(),
+  }
+}
 
 export function buildModelConfig(form) {
   const modelA = {
@@ -45,10 +76,10 @@ export function applyModelConfigToForm(form, config) {
   const minimax = config?.secondary || config?.provider_b || config?.minimax || {}
 
   next.qwenBase = qwen.base_url || next.qwenBase
-  next.qwenKey = qwen.api_key || ''
+  next.qwenKey = qwen.api_key || next.qwenKey || ''
   next.qwenModel = qwen.model || next.qwenModel
   next.minimaxBase = minimax.base_url || next.minimaxBase
-  next.minimaxKey = minimax.api_key || ''
+  next.minimaxKey = minimax.api_key || next.minimaxKey || ''
   next.minimaxModel = minimax.model || next.minimaxModel
 
   if (next.minimaxBase === 'https://api.minimax.chat/v1') {
@@ -58,25 +89,35 @@ export function applyModelConfigToForm(form, config) {
   return next
 }
 
+// Security policy:
+// - Non-sensitive config stored in localStorage
+// - API keys stored only in sessionStorage (cleared when browser session ends)
 export function saveModelConfig(form) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(buildModelConfig(form)))
+  const full = buildModelConfig(form)
+  writeJson(localStorage, STORAGE_KEY, sanitizeConfig(full))
+  writeJson(sessionStorage, SESSION_SECRET_KEY, buildSessionSecrets(form))
 }
 
 export function loadModelConfig() {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (!raw) {
-    return defaultFormState()
+  const base = defaultFormState()
+  const savedConfig = readJson(localStorage, STORAGE_KEY)
+  let next = savedConfig ? applyModelConfigToForm(base, savedConfig) : base
+
+  const sessionSecrets = readJson(sessionStorage, SESSION_SECRET_KEY)
+  if (sessionSecrets && typeof sessionSecrets === 'object') {
+    next = {
+      ...next,
+      qwenKey: String(sessionSecrets.qwenKey || ''),
+      minimaxKey: String(sessionSecrets.minimaxKey || ''),
+    }
   }
 
-  try {
-    return applyModelConfigToForm(defaultFormState(), JSON.parse(raw))
-  } catch {
-    return defaultFormState()
-  }
+  return next
 }
 
 export function clearModelConfig() {
   localStorage.removeItem(STORAGE_KEY)
+  sessionStorage.removeItem(SESSION_SECRET_KEY)
   return defaultFormState()
 }
 

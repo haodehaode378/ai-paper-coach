@@ -121,6 +121,33 @@ npm run dev -- --host 127.0.0.1 --port 5500
 - `GET /history` / `DELETE /history/{record_id}`
 - `GET /saved` / `DELETE /saved/{record_id}`
 
+
+### 统一响应结构
+除流式接口外，JSON 接口统一返回：
+
+```json
+{
+  "success": true,
+  "data": {},
+  "error": null
+}
+```
+
+失败返回：
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": 400,
+    "message": "...",
+    "details": null
+  }
+}
+```
+
+
 ### 适用场景
 - 上课/组会前 10 分钟快速吃透论文
 - 形成复现实验 TODO 清单
@@ -167,6 +194,33 @@ python run.py
 - `GET /report/{paper_id}`
 - `GET /export/{paper_id}.md`
 - `GET /trace/{paper_id}`
+
+
+### Unified Response Envelope
+For non-streaming JSON APIs, the response format is:
+
+```json
+{
+  "success": true,
+  "data": {},
+  "error": null
+}
+```
+
+Error format:
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": 400,
+    "message": "...",
+    "details": null
+  }
+}
+```
+
 
 ---
 
