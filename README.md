@@ -190,17 +190,6 @@ You can ingest a paper from URL/PDF, generate structured reports, and continue w
 - History and saved reports with deletion support
 - One-click API connectivity check (`/health`)
 
-### Enterprise Readiness (Fair View)
-- Current stage: strong product prototype (PoC), suitable for internal pilot.
-- Business value: high.
-- Production readiness: medium-low without platform governance.
-
-Before enterprise-wide rollout, prioritize:
-- Security/compliance: secret management, RBAC, audit logs, retention policy
-- Job infrastructure: retries, dead-letter handling, concurrency and quota control
-- Observability: success/latency/cost metrics, alerting, SLOs
-- Engineering process: automated tests, staged rollout, rollback and change audit
-
 ### Quick Start
 ```bash
 # backend
