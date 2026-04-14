@@ -50,7 +50,6 @@ const selectedDetails = computed(() => {
 
   return [
     { label: '文件名', value: selectedItem.value.name || '-' },
-    { label: '路径', value: selectedItem.value.path || '-' },
     { label: '大小', value: formatSize(selectedItem.value.size) },
     { label: '更新时间', value: formatDate(selectedItem.value.modified_at) },
     { label: '类型', value: selectedItem.value.kind || props.itemKind },
@@ -186,7 +185,7 @@ onMounted(loadItems)
                 @click="openItem(item)"
               >
                 <strong>{{ item.title || item.name || item.record_id }}</strong>
-                <p>{{ item.saved_at || item.status || item.path || '-' }}</p>
+                <p>{{ item.saved_at || item.status || formatDate(item.modified_at) || '-' }}</p>
               </button>
             </div>
           </div>
@@ -218,3 +217,4 @@ onMounted(loadItems)
     </div>
   </div>
 </template>
+

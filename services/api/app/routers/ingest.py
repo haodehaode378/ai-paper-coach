@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from app.core.storage import create_paper
+from app.core.parser import infer_title_from_source
 from app.core.history_store import UPLOADS_ROOT
 
 router = APIRouter(tags=["ingest"])
@@ -22,7 +23,7 @@ async def ingest(request: Request, file: UploadFile | None = File(default=None),
         input_url = (payload or {}).get("url")
         if not input_url:
             raise HTTPException(status_code=400, detail="url is required for JSON ingest")
-        paper = create_paper(source_type="url", source_name=input_url)
+        paper = create_paper(source_type="url", source_name=input_url, title=infer_title_from_source("url", input_url))
         return {"paper_id": paper["id"], "source_type": "url"}
 
     if file is None and not url:
@@ -32,7 +33,7 @@ async def ingest(request: Request, file: UploadFile | None = File(default=None),
         if not file.filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="Only PDF files are supported in MVP")
 
-        tmp_paper = create_paper(source_type="upload", source_name=file.filename)
+        tmp_paper = create_paper(source_type="upload", source_name=file.filename, title=infer_title_from_source("upload", file.filename))
         save_path = UPLOAD_ROOT / f"{tmp_paper['id']}.pdf"
         data = await file.read()
         save_path.write_bytes(data)
@@ -46,5 +47,5 @@ async def ingest(request: Request, file: UploadFile | None = File(default=None),
 
         return {"paper_id": tmp_paper["id"], "source_type": "upload", "filename": file.filename}
 
-    paper = create_paper(source_type="url", source_name=url)
+    paper = create_paper(source_type="url", source_name=url, title=infer_title_from_source("url", url))
     return {"paper_id": paper["id"], "source_type": "url"}

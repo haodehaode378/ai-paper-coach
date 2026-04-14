@@ -134,7 +134,7 @@ function buildChatScopeKey() {
   const base = String(apiBase.value || '').trim()
   if (!base) return ''
 
-  const title = normalizeScopeToken(report.value?.paper_meta?.title || '')
+  const title = normalizeScopeToken(resolveDisplayTitle())
   if (title) return `${base}|title:${title}`
 
   // Fallback for records with missing title.
@@ -164,6 +164,22 @@ function textLen(value) {
 
 function asArray(value) {
   return Array.isArray(value) ? value : []
+}
+
+
+function isPlaceholderTitle(value) {
+  const t = String(value || '').trim().toLowerCase().replace(/_/g, ' ')
+  if (!t) return true
+  const n = t.replace(/\s+/g, ' ')
+  return ['unknown title', 'unknowntitle', 'untitled', '?????', '????', '-'].includes(n)
+}
+
+function resolveDisplayTitle() {
+  const reportTitle = report.value?.paper_meta?.title
+  if (!isPlaceholderTitle(reportTitle)) return String(reportTitle).trim()
+  const fallbackTitle = context.value?.title || report.value?.meta?.title
+  if (!isPlaceholderTitle(fallbackTitle)) return String(fallbackTitle).trim()
+  return paperId.value || '???'
 }
 
 const context = computed(() => {

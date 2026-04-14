@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from app.routers import analyze, chat, export, ingest, records
-from app.core.storage import init_db
+from app.core.storage import init_db, mark_stale_pipeline_jobs
 
 
 def _success(data: Any) -> dict[str, Any]:
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     def on_startup() -> None:
         init_db()
+        mark_stale_pipeline_jobs()
 
     @app.get("/health")
     def health() -> dict[str, Any]:

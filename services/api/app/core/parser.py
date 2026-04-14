@@ -4,6 +4,7 @@ import io
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -24,6 +25,52 @@ ARXIV_ABS_RE = re.compile(r"<blockquote class=\"abstract[^>]*>\s*<span[^>]*>Abst
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([^?#]+)")
 
+
+
+
+def _clean_title(raw: str) -> str:
+    text = HTML_TAG_RE.sub("", str(raw or ""))
+    text = text.replace("Title:", "").replace("title:", "")
+    text = " ".join(text.split())
+    return text.strip()
+
+
+def infer_title_from_source(source_type: str, source_name: str) -> str:
+    source_name = str(source_name or "").strip()
+    if not source_name:
+        return ""
+
+    if source_type == "upload":
+        return _clean_title(Path(source_name).stem.replace("_", " "))
+
+    lower = source_name.lower()
+    if "arxiv.org/abs/" in lower:
+        try:
+            res = requests.get(source_name, timeout=12)
+            res.raise_for_status()
+            m = ARXIV_TITLE_RE.search(res.text)
+            if m:
+                title = _clean_title(m.group(1))
+                if title:
+                    return title
+        except Exception:
+            pass
+
+    parsed = urlparse(source_name)
+    basename = unquote(Path(parsed.path).name).strip()
+    if basename:
+        if basename.lower().endswith(".pdf"):
+            basename = basename[:-4]
+        basename = basename.replace("_", " ").replace("-", " ")
+        title = _clean_title(basename)
+        if title:
+            return title
+
+    m = ARXIV_ID_RE.search(lower)
+    if m:
+        return f"arXiv {m.group(1).strip('/')}"
+
+    return ""
 
 def _extract_pdf_text(pdf_bytes: bytes) -> str:
     if PdfReader is None:

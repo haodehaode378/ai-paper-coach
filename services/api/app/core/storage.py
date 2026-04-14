@@ -86,6 +86,24 @@ def init_db() -> None:
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
 
+
+            CREATE TABLE IF NOT EXISTS pipeline_jobs (
+                job_id TEXT PRIMARY KEY,
+                paper_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                strict INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                current_stage TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error_text TEXT,
+                result_json TEXT,
+                events_json TEXT NOT NULL,
+                next_event_id INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_created_at ON pipeline_jobs(created_at DESC);
+
             CREATE INDEX IF NOT EXISTS idx_runs_paper_id ON runs(paper_id, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_llm_traces_run_id ON llm_traces(run_id, created_at ASC);
             """
@@ -254,3 +272,126 @@ def get_llm_traces(run_id: str) -> list[dict[str, Any]]:
             (run_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+
+def save_pipeline_job(job: dict[str, Any]) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO pipeline_jobs (
+                job_id, paper_id, mode, strict, status, current_stage,
+                created_at, updated_at, error_text, result_json, events_json, next_event_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                paper_id = excluded.paper_id,
+                mode = excluded.mode,
+                strict = excluded.strict,
+                status = excluded.status,
+                current_stage = excluded.current_stage,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                error_text = excluded.error_text,
+                result_json = excluded.result_json,
+                events_json = excluded.events_json,
+                next_event_id = excluded.next_event_id
+            """,
+            (
+                job.get("job_id"),
+                job.get("paper_id"),
+                job.get("mode", "deep"),
+                1 if job.get("strict") else 0,
+                job.get("status", "running"),
+                job.get("current_stage", "pending"),
+                job.get("created_at") or now_iso(),
+                job.get("updated_at") or now_iso(),
+                job.get("error"),
+                json.dumps(job.get("result"), ensure_ascii=False),
+                json.dumps(job.get("events") or [], ensure_ascii=False),
+                int(job.get("next_event_id") or 1),
+            ),
+        )
+
+
+def _decode_pipeline_job_row(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["strict"] = bool(data.get("strict"))
+    try:
+        data["result"] = json.loads(data.get("result_json") or "null")
+    except Exception:
+        data["result"] = None
+    try:
+        data["events"] = json.loads(data.get("events_json") or "[]")
+    except Exception:
+        data["events"] = []
+    data["error"] = data.get("error_text")
+    data["next_event_id"] = int(data.get("next_event_id") or (len(data["events"]) + 1))
+    return {
+        "job_id": data.get("job_id"),
+        "paper_id": data.get("paper_id"),
+        "mode": data.get("mode", "deep"),
+        "strict": data.get("strict", False),
+        "status": data.get("status", "running"),
+        "current_stage": data.get("current_stage", "pending"),
+        "created_at": data.get("created_at") or now_iso(),
+        "updated_at": data.get("updated_at") or now_iso(),
+        "error": data.get("error"),
+        "result": data.get("result"),
+        "events": data.get("events") or [],
+        "next_event_id": data.get("next_event_id", 1),
+    }
+
+
+def get_pipeline_job(job_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM pipeline_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if not row:
+        return None
+    return _decode_pipeline_job_row(row)
+
+
+def mark_stale_pipeline_jobs(*, reason: str = "service restarted before task finished") -> int:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM pipeline_jobs WHERE status = 'running'"
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            job = _decode_pipeline_job_row(row)
+            job["status"] = "failed"
+            job["current_stage"] = "interrupted"
+            if not job.get("error"):
+                job["error"] = reason
+            events = list(job.get("events") or [])
+            event_id = int(job.get("next_event_id") or (len(events) + 1))
+            events.append(
+                {
+                    "id": event_id,
+                    "type": "failed",
+                    "stage": "interrupted",
+                    "message": reason,
+                    "data": None,
+                    "ts": now_iso(),
+                }
+            )
+            job["events"] = events[-500:]
+            job["next_event_id"] = event_id + 1
+            job["updated_at"] = now_iso()
+            conn.execute(
+                """
+                UPDATE pipeline_jobs
+                SET status = ?, current_stage = ?, updated_at = ?, error_text = ?, events_json = ?, next_event_id = ?
+                WHERE job_id = ?
+                """,
+                (
+                    job["status"],
+                    job["current_stage"],
+                    job["updated_at"],
+                    job.get("error"),
+                    json.dumps(job["events"], ensure_ascii=False),
+                    int(job["next_event_id"]),
+                    job["job_id"],
+                ),
+            )
+            updated += 1
+    return updated

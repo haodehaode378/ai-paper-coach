@@ -251,7 +251,7 @@ def normalize_report(payload: dict[str, Any], source_type: str = "url") -> dict[
 
     normalized = {
         "paper_meta": {
-            "title": str(paper_meta.get("title", "Unknown Title")),
+            "title": str(paper_meta.get("title", "")),
             "authors": _as_list(paper_meta.get("authors")),
             "year": str(paper_meta.get("year", "")) if paper_meta.get("year") is not None else "",
             "source_type": paper_meta.get("source_type", source_type),

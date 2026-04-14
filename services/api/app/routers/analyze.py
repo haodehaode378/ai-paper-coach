@@ -26,9 +26,11 @@ from app.core.storage import (
     get_latest_run,
     get_outputs,
     get_paper,
+    get_pipeline_job,
     save_draft,
     save_final,
     save_parse,
+    save_pipeline_job,
     save_review,
     update_run_status,
     now_iso,
@@ -93,40 +95,54 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _persist_job(job: dict[str, Any]) -> None:
+    save_pipeline_job(job)
+
+
 def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
     with PIPELINE_JOBS_LOCK:
         job = PIPELINE_JOBS.get(job_id)
     if not job:
-        return
+        job = get_pipeline_job(job_id)
+        if not job:
+            return
+        with PIPELINE_JOBS_LOCK:
+            PIPELINE_JOBS[job_id] = job
 
     try:
         with PIPELINE_JOBS_LOCK:
             job["current_stage"] = "analyze"
             _append_job_event(job, event_type="stage_started", stage="analyze", message="\u5f00\u59cb\u6267\u884c\u5206\u6790\u9636\u6bb5")
+            _persist_job(job)
 
         analyze_result = analyze(AnalyzeRequest(paper_id=req.paper_id, mode=req.mode, model_config=req.llm_config))
 
         with PIPELINE_JOBS_LOCK:
             _append_job_event(job, event_type="stage_completed", stage="analyze", data=analyze_result)
+            _persist_job(job)
 
         if req.mode != "fast":
             with PIPELINE_JOBS_LOCK:
                 job["current_stage"] = "review"
                 _append_job_event(job, event_type="stage_started", stage="review", message="\u5f00\u59cb\u6267\u884c\u5ba1\u9605\u9636\u6bb5")
+                _persist_job(job)
 
             review_result = review(ReviewRequest(paper_id=req.paper_id, model_config=req.llm_config))
 
             with PIPELINE_JOBS_LOCK:
                 _append_job_event(job, event_type="stage_completed", stage="review", data=review_result)
+                _persist_job(job)
 
             with PIPELINE_JOBS_LOCK:
                 job["current_stage"] = "finalize"
                 _append_job_event(job, event_type="stage_started", stage="finalize", message="\u5f00\u59cb\u6267\u884c\u6574\u7406\u9636\u6bb5")
+                _persist_job(job)
 
             finalize_result = finalize(FinalizeRequest(paper_id=req.paper_id, strict=req.strict or req.mode == "strict", model_config=req.llm_config))
 
             with PIPELINE_JOBS_LOCK:
                 _append_job_event(job, event_type="stage_completed", stage="finalize", data=finalize_result)
+                _persist_job(job)
 
         run = get_latest_run(req.paper_id)
         with PIPELINE_JOBS_LOCK:
@@ -137,11 +153,13 @@ def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
                 "run_id": (run or {}).get("id"),
             }
             _append_job_event(job, event_type="completed", stage="done", data=job["result"])
+            _persist_job(job)
     except Exception as exc:
         with PIPELINE_JOBS_LOCK:
             job["status"] = "failed"
             job["error"] = str(exc)
             _append_job_event(job, event_type="failed", stage=job.get("current_stage"), message=str(exc))
+            _persist_job(job)
 
 
 def _merge_report_for_display(
@@ -230,6 +248,45 @@ def _json_len(value: Any) -> int:
         return len(str(value))
 
 
+
+
+def _is_placeholder_title(value: Any) -> bool:
+    title = str(value or "").strip().lower().replace("_", " ")
+    if not title:
+        return True
+    normalized = " ".join(title.split())
+    return normalized in {
+        "unknown title",
+        "unknowntitle",
+        "untitled",
+        "?????",
+        "????",
+        "-",
+    }
+
+
+
+def _maybe_backfill_paper_title(paper_id: str, report: dict[str, Any] | None, paper: dict[str, Any] | None) -> None:
+    report_title = ((report or {}).get("paper_meta") or {}).get("title")
+    current_title = (paper or {}).get("title")
+    fallback_title = (paper or {}).get("source_name") or paper_id
+
+    candidate = None
+    if not _is_placeholder_title(report_title):
+        candidate = str(report_title).strip()
+    elif not _is_placeholder_title(current_title):
+        candidate = str(current_title).strip()
+    elif fallback_title:
+        candidate = str(fallback_title).strip()
+
+    if not candidate:
+        return
+
+    from app.core.storage import get_conn
+
+    with get_conn() as conn:
+        conn.execute("UPDATE papers SET title = ? WHERE id = ?", (candidate, paper_id))
+
 def _save_history_snapshot(*, run: dict[str, Any], paper: dict[str, Any], report: dict[str, Any], stage: str) -> None:
     payload = {
         "record_id": run["id"],
@@ -240,7 +297,10 @@ def _save_history_snapshot(*, run: dict[str, Any], paper: dict[str, Any], report
         "saved_at": run.get("finished_at") or run.get("started_at"),
         "meta": {
             "paper_id": paper["id"],
-            "title": (report.get("paper_meta") or {}).get("title") or paper.get("title") or paper.get("source_name") or paper["id"],
+            "title": (
+                paper.get("source_name") if _is_placeholder_title((report.get("paper_meta") or {}).get("title"))
+                else (report.get("paper_meta") or {}).get("title")
+            ) or paper.get("title") or paper.get("source_name") or paper["id"],
             "source_type": paper.get("source_type", "url"),
             "source_name": paper.get("source_name", "-"),
             "saved_at": run.get("finished_at") or run.get("started_at"),
@@ -289,6 +349,7 @@ def analyze(req: AnalyzeRequest):
         run = get_latest_run(req.paper_id) or run
         merged_report = _merge_report_for_display(draft=draft, review=None, final=None)
         if merged_report:
+            _maybe_backfill_paper_title(req.paper_id, merged_report, paper)
             _save_history_snapshot(run=run, paper=paper, report=merged_report, stage="analyze")
     except Exception as e:
         update_run_status(run["id"], "failed")
@@ -420,6 +481,7 @@ def finalize(req: FinalizeRequest):
         paper = get_paper(req.paper_id)
         merged_report = _merge_report_for_display(draft=draft, review=review, final=final)
         if paper and merged_report:
+            _maybe_backfill_paper_title(req.paper_id, merged_report, paper)
             _save_history_snapshot(run=run, paper=paper, report=merged_report, stage="finalize")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"finalize failed: {e}") from e
@@ -521,9 +583,13 @@ def pipeline_start(req: PipelineStartRequest):
 def pipeline_job_status(job_id: str):
     with PIPELINE_JOBS_LOCK:
         job = PIPELINE_JOBS.get(job_id)
+    if not job:
+        job = get_pipeline_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="pipeline job not found")
-        return _job_snapshot(job)
+        with PIPELINE_JOBS_LOCK:
+            PIPELINE_JOBS[job_id] = job
+    return _job_snapshot(job)
 
 
 @router.get("/pipeline/jobs/{job_id}/events")
@@ -533,13 +599,18 @@ def pipeline_job_events(job_id: str):
         while True:
             with PIPELINE_JOBS_LOCK:
                 job = PIPELINE_JOBS.get(job_id)
+
+            if not job:
+                job = get_pipeline_job(job_id)
                 if not job:
                     payload = {"type": "failed", "message": "pipeline job not found", "ts": now_iso()}
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     break
+                with PIPELINE_JOBS_LOCK:
+                    PIPELINE_JOBS[job_id] = job
 
-                events = list(job["events"])
-                status = job["status"]
+            events = list(job["events"])
+            status = job["status"]
 
             while cursor < len(events):
                 payload = events[cursor]

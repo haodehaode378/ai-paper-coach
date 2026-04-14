@@ -16,6 +16,26 @@
   <a href="#zh-cn">简体中文</a> | <a href="#english">English</a>
 </p>
 
+## GitHub About????
+
+> ??????????? About
+
+**Description????**  
+????????? AI ?????????????????????????????????
+
+**Description?English?**  
+An AI paper coach for students and researchers: structured paper analysis, reproducibility guidance, 7-question insights, and traceable history.
+
+**Suggested Topics**  
+`ai` `paper-reading` `research-assistant` `llm` `fastapi` `vue3` `pdf` `reproducibility` `arxiv` `education`
+
+**Repo Pitch**
+- ???? `?? -> ?? -> ?? -> ?? -> ??`
+- ????? + ?????? + ????/API ????
+- ???????????????????????
+
+---
+
 ---
 
 <a id="zh-cn"></a>
@@ -169,6 +189,17 @@ You can ingest a paper from URL/PDF, generate structured reports, and continue w
 - Side-by-side report + original PDF reading
 - History and saved reports with deletion support
 - One-click API connectivity check (`/health`)
+
+### Enterprise Readiness (Fair View)
+- Current stage: strong product prototype (PoC), suitable for internal pilot.
+- Business value: high.
+- Production readiness: medium-low without platform governance.
+
+Before enterprise-wide rollout, prioritize:
+- Security/compliance: secret management, RBAC, audit logs, retention policy
+- Job infrastructure: retries, dead-letter handling, concurrency and quota control
+- Observability: success/latency/cost metrics, alerting, SLOs
+- Engineering process: automated tests, staged rollout, rollback and change audit
 
 ### Quick Start
 ```bash
