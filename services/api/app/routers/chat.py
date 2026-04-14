@@ -27,6 +27,8 @@ class ReportChatRequest(BaseModel):
     messages: list[ChatTurn]
     include_history: bool = True
     include_papers: bool = True
+    response_language: Literal["zh", "en", "follow_user"] = "zh"
+    model_slot: Literal["primary", "secondary"] = "primary"
     llm_config: ModelConfig | None = Field(default=None, alias="model_config")
 
 
@@ -112,13 +114,25 @@ def _papers_context(limit: int = 8) -> str:
     return "Recent papers:\n" + "\n".join(lines)
 
 
-def _build_system_prompt(report: dict[str, Any], *, include_history: bool, include_papers: bool) -> str:
+def _build_system_prompt(
+    report: dict[str, Any],
+    *,
+    include_history: bool,
+    include_papers: bool,
+    response_language: Literal["zh", "en", "follow_user"],
+) -> str:
+    language_rule = {
+        "zh": "Always answer in Chinese.",
+        "en": "Always answer in English.",
+        "follow_user": "Follow the user's language in the latest user message.",
+    }.get(response_language, "Always answer in Chinese.")
+
     blocks = [
         "You are an AI paper-reading assistant. "
         "Answer strictly based on the provided context. "
         "Prefer the current report first, then use history records and paper library when they help. "
         "If the context is insufficient, say that clearly. "
-        "Default to Chinese unless the user explicitly asks for another language. "
+        f"{language_rule} "
         "Be direct, readable, and do not invent paper details.",
         "Current report context:\n" + _report_context(report),
     ]
@@ -136,11 +150,16 @@ def chat_with_report(req: ReportChatRequest):
 
     cfg = req.llm_config.model_dump() if req.llm_config else None
     router_client = ModelRouter(model_config=cfg, trace_phase="chat")
-    system = _build_system_prompt(req.report, include_history=req.include_history, include_papers=req.include_papers)
+    system = _build_system_prompt(
+        req.report,
+        include_history=req.include_history,
+        include_papers=req.include_papers,
+        response_language=req.response_language,
+    )
     user_text = _conversation_to_user_text(req.messages)
 
     try:
-        answer = router_client.chat_text(slot="primary", system=system, user=user_text)
+        answer = router_client.chat_text(slot=req.model_slot, system=system, user=user_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"chat failed: {e}") from e
 
@@ -160,12 +179,17 @@ def chat_with_report_stream(req: ReportChatRequest):
 
     cfg = req.llm_config.model_dump() if req.llm_config else None
     router_client = ModelRouter(model_config=cfg, trace_phase="chat")
-    system = _build_system_prompt(req.report, include_history=req.include_history, include_papers=req.include_papers)
+    system = _build_system_prompt(
+        req.report,
+        include_history=req.include_history,
+        include_papers=req.include_papers,
+        response_language=req.response_language,
+    )
     user_text = _conversation_to_user_text(req.messages)
 
     def event_stream():
         try:
-            for chunk in router_client.chat_text_stream(slot="primary", system=system, user=user_text):
+            for chunk in router_client.chat_text_stream(slot=req.model_slot, system=system, user=user_text):
                 if not chunk:
                     continue
                 yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"

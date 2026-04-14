@@ -11,6 +11,10 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 const CHAT_WIDTH_KEY = 'apc_report_chat_width_v1'
 const CHAT_OPEN_KEY = 'apc_report_chat_open_v1'
+const CHAT_LANG_KEY = 'apc_report_chat_lang_v1'
+const CHAT_SLOT_KEY = 'apc_report_chat_slot_v1'
+const CHAT_HISTORY_STORE_KEY = 'apc_report_chat_history_v1'
+const CHAT_HISTORY_MAX_MESSAGES = 120
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
@@ -38,10 +42,13 @@ const chatInput = ref('')
 const chatLoading = ref(false)
 const includeHistoryContext = ref(true)
 const includePapersContext = ref(true)
+const chatLanguage = ref(localStorage.getItem(CHAT_LANG_KEY) || 'zh')
+const chatModelSlot = ref(localStorage.getItem(CHAT_SLOT_KEY) || 'primary')
 const chatOpen = ref(localStorage.getItem(CHAT_OPEN_KEY) !== '0')
 const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 380))
 const chatListRef = ref(null)
 const chatMessages = ref([])
+const chatHistoryScope = ref('')
 let resizing = false
 
 const questionMeta = [
@@ -67,6 +74,74 @@ function resetChatSession() {
 }
 
 resetChatSession()
+
+function normalizeChatMessages(messages) {
+  if (!Array.isArray(messages)) return [createStarterMessage()]
+  const items = messages
+    .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+    .map((item) => ({ role: item.role, content: item.content }))
+  if (!items.length) return [createStarterMessage()]
+  return items.slice(-CHAT_HISTORY_MAX_MESSAGES)
+}
+
+function readChatHistoryStore() {
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_STORE_KEY)
+    const data = raw ? JSON.parse(raw) : {}
+    return data && typeof data === 'object' ? data : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeChatHistoryStore(store) {
+  localStorage.setItem(CHAT_HISTORY_STORE_KEY, JSON.stringify(store))
+}
+
+function loadChatHistoryForScope(scopeKey) {
+  if (!scopeKey) {
+    resetChatSession()
+    return
+  }
+  const store = readChatHistoryStore()
+  chatMessages.value = normalizeChatMessages(store[scopeKey])
+}
+
+function saveChatHistoryForScope(scopeKey, messages) {
+  if (!scopeKey) return
+  const store = readChatHistoryStore()
+  store[scopeKey] = normalizeChatMessages(messages)
+  writeChatHistoryStore(store)
+}
+
+function clearChatHistoryForScope(scopeKey) {
+  if (!scopeKey) return
+  const store = readChatHistoryStore()
+  if (Object.prototype.hasOwnProperty.call(store, scopeKey)) {
+    delete store[scopeKey]
+    writeChatHistoryStore(store)
+  }
+}
+
+function normalizeScopeToken(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
+
+function buildChatScopeKey() {
+  const base = String(apiBase.value || '').trim()
+  if (!base) return ''
+
+  const title = normalizeScopeToken(report.value?.paper_meta?.title || '')
+  if (title) return `${base}|title:${title}`
+
+  // Fallback for records with missing title.
+  if (paperId.value) return `${base}|paper:${paperId.value}`
+  return ''
+}
+
 
 function addStatus(message) {
   const timestamp = new Date().toLocaleTimeString()
@@ -186,6 +261,8 @@ const chatContextSummary = computed(() => {
   const parts = ['当前报告']
   if (includeHistoryContext.value) parts.push('历史记录')
   if (includePapersContext.value) parts.push('论文库')
+  parts.push(chatLanguage.value === 'en' ? 'English' : (chatLanguage.value === 'follow_user' ? '\u8ddf\u968f\u63d0\u95ee\u8bed\u8a00' : '\u4e2d\u6587'))
+  parts.push(chatModelSlot.value === 'secondary' ? '\u6a21\u578bB' : '\u6a21\u578bA')
   return parts.join(' + ')
 })
 
@@ -203,7 +280,9 @@ function openChat() {
 }
 
 function clearChat() {
+  clearChatHistoryForScope(chatHistoryScope.value)
   resetChatSession()
+  addStatus('\u5df2\u6e05\u7a7a\u5f53\u524d\u62a5\u544a\u7684\u5bf9\u8bdd\u5386\u53f2\u3002')
 }
 
 function startResize(event) {
@@ -245,6 +324,8 @@ function buildChatPayload(messages) {
     messages,
     include_history: includeHistoryContext.value,
     include_papers: includePapersContext.value,
+    response_language: chatLanguage.value,
+    model_slot: chatModelSlot.value,
     model_config: buildModelConfig(formState),
   }
 }
@@ -463,6 +544,7 @@ async function loadReport() {
   reportError.value = ''
   report.value = null
   stopPolling()
+  chatHistoryScope.value = ""
   resetChatSession()
   pdfDoc.value = null
   pdfPage.value = 1
@@ -508,6 +590,8 @@ async function loadReport() {
     reportError.value = error.message
     addStatus(`错误：${error.message}`)
   } finally {
+    chatHistoryScope.value = buildChatScopeKey()
+    loadChatHistoryForScope(chatHistoryScope.value)
     loading.value = false
     await nextTick()
     scrollChatToBottom()
@@ -525,7 +609,12 @@ onBeforeUnmount(() => {
 })
 
 watch(() => route.fullPath, loadReport, { immediate: true })
-watch(chatMessages, () => nextTick(scrollChatToBottom), { deep: true })
+watch(chatMessages, (messages) => {
+  saveChatHistoryForScope(chatHistoryScope.value, messages)
+  nextTick(scrollChatToBottom)
+}, { deep: true })
+watch(chatLanguage, (value) => localStorage.setItem(CHAT_LANG_KEY, String(value || 'zh')))
+watch(chatModelSlot, (value) => localStorage.setItem(CHAT_SLOT_KEY, String(value || 'primary')))
 watch([activeTab, paperId, apiBase], async ([tab]) => {
   if (tab === 'paper') await loadPdfDocument()
 })
@@ -712,13 +801,28 @@ watch(pdfPage, async () => {
             <div class="chat-context-strip">
               <label class="chat-context-toggle">
                 <input v-model="includeHistoryContext" type="checkbox" />
-                <span>带入历史记录</span>
+                <span>&#x5E26;&#x5165;&#x5386;&#x53F2;&#x8BB0;&#x5F55;</span>
               </label>
               <label class="chat-context-toggle">
                 <input v-model="includePapersContext" type="checkbox" />
-                <span>带入论文库</span>
+                <span>&#x5E26;&#x5165;&#x8BBA;&#x6587;&#x5E93;</span>
               </label>
-              <span class="sidebar-meta">上下文：{{ chatContextSummary }}</span>
+              <label class="chat-context-toggle">
+                <span>&#x56DE;&#x7B54;&#x8BED;&#x8A00;</span>
+                <select v-model="chatLanguage" class="chat-context-select">
+                  <option value="zh">&#x4E2D;&#x6587;</option>
+                  <option value="en">English</option>
+                  <option value="follow_user">&#x8DDF;&#x968F;&#x63D0;&#x95EE;&#x8BED;&#x8A00;</option>
+                </select>
+              </label>
+              <label class="chat-context-toggle">
+                <span>&#x6A21;&#x578B;&#x901A;&#x9053;</span>
+                <select v-model="chatModelSlot" class="chat-context-select">
+                  <option value="primary">&#x6A21;&#x578B; A (Primary)</option>
+                  <option value="secondary">&#x6A21;&#x578B; B (Secondary)</option>
+                </select>
+              </label>
+              <span class="sidebar-meta">&#x4E0A;&#x4E0B;&#x6587;&#xFF1A;{{ chatContextSummary }}</span>
             </div>
 
             <div ref="chatListRef" class="chat-message-list">

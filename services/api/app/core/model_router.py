@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -197,6 +197,12 @@ class ModelRouter:
                     errors.append(f"attempt{idx}: network_error={e}")
                     break
 
+                # Some providers return incorrect charset headers (e.g. latin-1) even for UTF-8 JSON.
+                # Force UTF-8 fallback for non-explicit/legacy encodings to avoid mojibake.
+                enc = (res.encoding or "").lower().strip()
+                if not enc or enc in {"iso-8859-1", "latin-1", "ascii"}:
+                    res.encoding = "utf-8"
+
                 if not res.ok:
                     body = (res.text or "")[:300]
                     status_code = res.status_code
@@ -336,14 +342,26 @@ class ModelRouter:
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
         with requests.post(url, json=payload, headers=headers, timeout=(8, timeout_sec), stream=True) as res:
+            # Streaming endpoints may advertise wrong charset; keep text decode deterministic.
+            enc = (res.encoding or "").lower().strip()
+            if not enc or enc in {"iso-8859-1", "latin-1", "ascii"}:
+                res.encoding = "utf-8"
+
             if not res.ok:
                 body = (res.text or "")[:300]
                 raise RuntimeError(f"status={res.status_code}, body={body}")
 
-            for raw_line in res.iter_lines(decode_unicode=True):
+            for raw_line in res.iter_lines(decode_unicode=False):
                 if not raw_line:
                     continue
-                line = raw_line.strip()
+                if isinstance(raw_line, bytes):
+                    try:
+                        line = raw_line.decode("utf-8")
+                    except Exception:
+                        line = raw_line.decode(res.encoding or "utf-8", errors="replace")
+                else:
+                    line = str(raw_line)
+                line = line.strip()
                 if not line.startswith("data:"):
                     continue
                 data_str = line[5:].strip()
@@ -611,4 +629,5 @@ class ModelRouter:
 
     def minimax(self, system: str, user: str) -> dict[str, Any]:
         return self.secondary(system, user)
+
 

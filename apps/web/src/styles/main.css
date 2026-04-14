@@ -923,6 +923,21 @@ button {
 }
 
 
+.chat-context-select {
+  min-height: 28px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  padding: 0 8px;
+}
+
+.chat-context-select:focus {
+  outline: none;
+  border-color: var(--border);
+  background: #fff;
+}
+
+
 .paper-preview-section {
   display: grid;
   gap: 10px;
