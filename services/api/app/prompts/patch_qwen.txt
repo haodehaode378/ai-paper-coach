@@ -11,7 +11,7 @@ paper_meta, three_minute_summary, teach_classmate, reproduction_guide, reading_q
 整合规则：
 0. 必须综合 draft、review、context 的全部可用证据再输出，不得忽略 context。
 1. 以 review.reading_qa 为主，写入最终 reading_qa。
-2. three_minute_summary.problem 必须是完整论文分析（>=1000字）。
+2. three_minute_summary.problem 必须是完整论文分析（>=800字）。
 3. reproduction_guide 全字段合计>=1000字，强调可复现实操。
 4. method_points/key_results/limitations/commands/common_errors 必须是数组。
 5. teach_classmate 可保留为空或简短占位，不作为本阶段重点。

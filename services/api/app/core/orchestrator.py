@@ -156,8 +156,8 @@ def get_requirement_issues(report: dict[str, Any]) -> list[str]:
             issues.append(f"three_minute_summary.{arr_key} 为空")
 
     problem_len = _text_len(summary.get("problem", ""))
-    if problem_len < 1000:
-        issues.append(f"three_minute_summary.problem 字数不足（{problem_len}/1000）")
+    if problem_len < 800:
+        issues.append(f"three_minute_summary.problem 字数不足（{problem_len}/800）")
 
     repro_total = (
         _text_len(repro.get("environment", ""))
@@ -477,6 +477,35 @@ def _is_degenerate_finalize_report(report: dict[str, Any]) -> bool:
     return summary_signal == 0 and repro_signal == 0
 
 
+def _merge_reproduction_guide(
+    current: dict[str, Any] | None,
+    fallback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    cur = current if isinstance(current, dict) else {}
+    fb = fallback if isinstance(fallback, dict) else {}
+
+    def _pick_text(key: str) -> str:
+        left = str(cur.get(key, "")).strip()
+        if left:
+            return left
+        return str(fb.get(key, "")).strip()
+
+    def _pick_list(key: str) -> list[Any]:
+        left = _as_list(cur.get(key))
+        if any(_text_len(item) > 0 for item in left):
+            return left
+        return _as_list(fb.get(key))
+
+    return {
+        "environment": _pick_text("environment"),
+        "dataset": _pick_text("dataset"),
+        "commands": _pick_list("commands"),
+        "key_hyperparams": _pick_list("key_hyperparams"),
+        "expected_range": _pick_text("expected_range"),
+        "common_errors": _pick_list("common_errors"),
+    }
+
+
 def _provider_label(router: ModelRouter, slot: str) -> str:
     info = router.provider_info(slot)
     name = str(info.get("name") or slot)
@@ -645,6 +674,10 @@ def patch_draft(
             patched_raw = getattr(router, provider)(system=system, user=user)
             patched = normalize_report(patched_raw, source_type=draft.get("paper_meta", {}).get("source_type", "url"))
             patched["paper_meta"] = copy.deepcopy(draft.get("paper_meta", patched.get("paper_meta", {})))
+            patched["reproduction_guide"] = _merge_reproduction_guide(
+                patched.get("reproduction_guide"),
+                draft.get("reproduction_guide"),
+            )
             patched["reading_qa"] = {
                 **patched.get("reading_qa", {}),
                 **_normalize_review_payload(review).get("reading_qa", {}),
@@ -683,6 +716,10 @@ def patch_draft(
                     },
                 )
                 patched = repair_report(report=patched, chunks=repair_chunks, model_config=model_config, trace_hook=trace_hook)
+                patched["reproduction_guide"] = _merge_reproduction_guide(
+                    patched.get("reproduction_guide"),
+                    draft.get("reproduction_guide"),
+                )
             _append_requirement_issues(patched, "阶段3输出")
             issue_count = len(get_requirement_issues(patched))
             logger.info(

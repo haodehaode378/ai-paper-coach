@@ -2,6 +2,7 @@
 
 import io
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -22,8 +23,9 @@ except Exception:  # pragma: no cover
 
 
 ARXIV_ABS_RE = re.compile(r"<blockquote class=\"abstract[^>]*>\s*<span[^>]*>Abstract:</span>(.*?)</blockquote>", re.S)
+ARXIV_TITLE_RE = re.compile(r"<h1[^>]*class=\"title[^>]*>.*?<span[^>]*>Title:</span>(.*?)</h1>", re.S)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
-ARXIV_ID_RE = re.compile(r"arxiv\.org/abs/([^?#]+)")
+ARXIV_ID_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^?#/]+)")
 
 
 
@@ -35,6 +37,34 @@ def _clean_title(raw: str) -> str:
     return text.strip()
 
 
+def _extract_arxiv_id(source_name: str) -> str | None:
+    m = ARXIV_ID_RE.search(str(source_name or "").strip().lower())
+    if not m:
+        return None
+    arxiv_id = m.group(1).strip("/")
+    if arxiv_id.endswith(".pdf"):
+        arxiv_id = arxiv_id[:-4]
+    return arxiv_id or None
+
+
+def _arxiv_title_by_api(arxiv_id: str) -> str:
+    try:
+        url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
+        res = requests.get(url, timeout=12)
+        res.raise_for_status()
+        root = ET.fromstring(res.text)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        entry = root.find("atom:entry", ns)
+        if entry is None:
+            return ""
+        title_el = entry.find("atom:title", ns)
+        if title_el is None:
+            return ""
+        return _clean_title(title_el.text or "")
+    except Exception:
+        return ""
+
+
 def infer_title_from_source(source_type: str, source_name: str) -> str:
     source_name = str(source_name or "").strip()
     if not source_name:
@@ -44,6 +74,11 @@ def infer_title_from_source(source_type: str, source_name: str) -> str:
         return _clean_title(Path(source_name).stem.replace("_", " "))
 
     lower = source_name.lower()
+    arxiv_id = _extract_arxiv_id(source_name)
+    if arxiv_id:
+        title = _arxiv_title_by_api(arxiv_id)
+        if title:
+            return title
     if "arxiv.org/abs/" in lower:
         try:
             res = requests.get(source_name, timeout=12)
@@ -66,9 +101,8 @@ def infer_title_from_source(source_type: str, source_name: str) -> str:
         if title:
             return title
 
-    m = ARXIV_ID_RE.search(lower)
-    if m:
-        return f"arXiv {m.group(1).strip('/')}"
+    if arxiv_id:
+        return f"arXiv {arxiv_id}"
 
     return ""
 

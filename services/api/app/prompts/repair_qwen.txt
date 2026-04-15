@@ -13,7 +13,7 @@ paper_meta, three_minute_summary, teach_classmate, reproduction_guide, reading_q
 3. 只输出 JSON，不要 markdown。
 
 最低门槛：
-- three_minute_summary.problem >=1000字
+- three_minute_summary.problem >=800字
 - reading_qa 7题每题>=700字
 - reproduction_guide 全字段合计>=1000字
 - teach_classmate.elevator_30s 非空

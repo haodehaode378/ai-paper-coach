@@ -212,7 +212,7 @@ const requirementChecks = computed(() => {
     textLen(reproduction.common_errors || [])
 
   const checks = [
-    { key: 'three_minute_summary.problem', title: '摘要：论文问题与目标', min: 1000, actual: textLen(summary.problem || '') },
+    { key: 'three_minute_summary.problem', title: '摘要：论文问题与目标', min: 800, actual: textLen(summary.problem || '') },
     { key: 'reproduction_guide.total', title: '复现指导：整体内容', min: 1000, actual: reproductionTotal },
   ]
 

@@ -251,18 +251,31 @@ def _json_len(value: Any) -> int:
 
 
 def _is_placeholder_title(value: Any) -> bool:
-    title = str(value or "").strip().lower().replace("_", " ")
+    title_raw = str(value or "").strip()
+    title = title_raw.lower().replace("_", " ")
     if not title:
         return True
     normalized = " ".join(title.split())
-    return normalized in {
+    if normalized in {
         "unknown title",
         "unknowntitle",
         "untitled",
+        "no title",
+        "not provided",
+        "not available",
         "?????",
         "????",
         "-",
-    }
+    }:
+        return True
+    # Common placeholder titles generated in Chinese fallback flows.
+    if title_raw.startswith("论文中未明确说明"):
+        return True
+    if "未明确说明" in title_raw and len(title_raw) <= 24:
+        return True
+    if "not explicitly stated" in normalized:
+        return True
+    return False
 
 
 
