@@ -14,6 +14,8 @@ function traceItemKey(item, fallbackIndex = 0) {
 export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
   const traces = ref([])
   const traceError = ref('')
+  const runStatus = ref('idle')
+  const runId = ref(null)
 
   let activeRunId = null
   let lastTraceCount = -1
@@ -27,6 +29,8 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
     lastTraceError = ''
     traceError.value = ''
     traces.value = []
+    runStatus.value = 'idle'
+    runId.value = null
     traceSeen = new Set()
   }
 
@@ -49,6 +53,8 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
       )
       const incoming = Array.isArray(data.traces) ? data.traces : []
       const runId = data.run_id || null
+      runStatus.value = data.status || 'idle'
+      runId.value = runId
       let changed = false
 
       traceError.value = ''
@@ -132,6 +138,8 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
   return {
     traces,
     traceError,
+    runStatus,
+    runId,
     fetchTraces,
     startPolling,
     stopPolling,

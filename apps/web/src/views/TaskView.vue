@@ -16,6 +16,12 @@ import { useTraceHistory } from '../composables/useTraceHistory'
 
 const JOB_POLL_INTERVAL_MS = 1500
 const JOB_POLL_TIMEOUT_MS = 1800000
+const STAGE_DEFAULT_MS = {
+  analyze: 180000,
+  review: 240000,
+  finalize: 300000,
+}
+const STAGE_ORDER = ['analyze', 'review', 'finalize']
 
 const router = useRouter()
 const form = ref(loadModelConfig())
@@ -26,6 +32,9 @@ const isRunning = ref(false)
 const checkingApi = ref(false)
 const historyRecords = ref([])
 const stageState = ref({ ingest: false, analyze: false, review: false, finalize: false })
+const stageElapsedMs = ref({})
+const stageStartedAtMs = ref({})
+const jobSnapshot = ref(null)
 const apiBaseRef = computed(() => form.value.apiBase)
 
 function addStatus(message) {
@@ -48,6 +57,9 @@ const pipelineSteps = computed(() => [
 
 function resetStageState() {
   stageState.value = { ingest: false, analyze: false, review: false, finalize: false }
+  stageElapsedMs.value = {}
+  stageStartedAtMs.value = {}
+  jobSnapshot.value = null
 }
 
 async function loadHistoryRecords() {
@@ -186,12 +198,28 @@ function consumePipelineEvents(events, seenEventIds) {
     if (message) addStatus(message)
 
     if (event?.type === 'stage_started' && stage) {
+      if (event?.ts) {
+        const startedAt = Date.parse(event.ts)
+        if (Number.isFinite(startedAt)) {
+          stageStartedAtMs.value = { ...stageStartedAtMs.value, [stage]: startedAt }
+        }
+      }
       addStatus(`\u9636\u6bb5\u5f00\u59cb\uff1a${stage}`)
     }
 
     if (event?.type === 'stage_completed' && stage) {
       if (Object.prototype.hasOwnProperty.call(stageState.value, stage)) {
         stageState.value[stage] = true
+      }
+      const metricElapsed = Number(event?.data?.stage_metrics?.elapsed_ms || 0)
+      if (metricElapsed > 0) {
+        stageElapsedMs.value = { ...stageElapsedMs.value, [stage]: metricElapsed }
+      } else if (event?.ts && stageStartedAtMs.value?.[stage]) {
+        const completedAt = Date.parse(event.ts)
+        if (Number.isFinite(completedAt)) {
+          const elapsed = Math.max(completedAt - stageStartedAtMs.value[stage], 0)
+          stageElapsedMs.value = { ...stageElapsedMs.value, [stage]: elapsed }
+        }
       }
       addStatus(`\u9636\u6bb5\u5b8c\u6210\uff1a${stage}`)
       emitStageMessages(event?.data || {}, stage)
@@ -258,6 +286,7 @@ async function waitPipelineJob(jobId) {
       throw error
     }
 
+    jobSnapshot.value = snapshot || null
     consumePipelineEvents(snapshot?.events, seenEventIds)
 
     if (snapshot?.status === 'completed') {
@@ -271,6 +300,108 @@ async function waitPipelineJob(jobId) {
     await sleep(JOB_POLL_INTERVAL_MS)
   }
 }
+
+const currentStageInfo = computed(() => {
+  const stage = String(jobSnapshot.value?.current_stage || '').trim()
+  if (!stage || stage === 'pending') return { key: 'ingest', label: '导入' }
+  if (stage === 'done') return { key: 'done', label: '完成' }
+  const labelMap = {
+    analyze: '分析',
+    review: '审阅',
+    finalize: '整理',
+    interrupted: '中断',
+  }
+  return { key: stage, label: labelMap[stage] || stage }
+})
+
+const progressPercent = computed(() => {
+  const total = 4
+  let completed = 0
+  if (stageState.value.ingest) completed += 1
+  if (stageState.value.analyze) completed += 1
+  if (stageState.value.review) completed += 1
+  if (stageState.value.finalize) completed += 1
+
+  if (isRunning.value && currentStageInfo.value.key !== 'done') {
+    const current = currentStageInfo.value.key
+    if (['analyze', 'review', 'finalize'].includes(current) && !stageState.value[current]) {
+      completed += 0.35
+    }
+  }
+
+  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
+})
+
+function estimatedStageMs(stage) {
+  const measured = Number(stageElapsedMs.value?.[stage] || 0)
+  if (measured > 0) return measured
+  return STAGE_DEFAULT_MS[stage] || 0
+}
+
+function formatEta(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '约 0 秒'
+  const sec = Math.ceil(ms / 1000)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `约 ${h}小时${m}分`
+  if (m > 0) return `约 ${m}分${s}秒`
+  return `约 ${s}秒`
+}
+
+const etaLabel = computed(() => {
+  if (!isRunning.value) return '-'
+  const current = currentStageInfo.value.key
+  if (current === 'done') return '已完成'
+
+  let remaining = 0
+  for (const stage of STAGE_ORDER) {
+    if (stageState.value[stage]) continue
+    if (stage === current) {
+      const startedAt = Number(stageStartedAtMs.value?.[stage] || 0)
+      const expected = estimatedStageMs(stage)
+      if (startedAt > 0 && expected > 0) {
+        const elapsed = Math.max(Date.now() - startedAt, 0)
+        remaining += Math.max(expected - elapsed, 0)
+      } else {
+        remaining += expected
+      }
+    } else {
+      remaining += estimatedStageMs(stage)
+    }
+  }
+  return formatEta(remaining)
+})
+
+const currentModelLabel = computed(() => {
+  const stage = currentStageInfo.value.key
+  const phaseMap = {
+    analyze: ['analyze'],
+    review: ['review'],
+    finalize: ['finalize', 'repair'],
+  }
+  const phases = phaseMap[stage] || []
+  if (phases.length > 0) {
+    const latest = [...traces.value].reverse().find((item) => {
+      const phase = String(item?.phase || '').toLowerCase()
+      const slot = String(item?.provider_slot || '').toLowerCase()
+      return phases.includes(phase) && slot !== 'orchestrator'
+    })
+    if (latest) {
+      const provider = latest.provider_name || latest.provider_slot || 'unknown'
+      const model = latest.model || '-'
+      return `${provider} · ${model}`
+    }
+  }
+
+  if (stage === 'review') {
+    return `${form.value.minimaxModel || 'Model B'}（优先） / ${form.value.qwenModel || 'Model A'}（回退）`
+  }
+  if (stage === 'analyze' || stage === 'finalize') {
+    return `${form.value.qwenModel || 'Model A'}（优先） / ${form.value.minimaxModel || 'Model B'}（回退）`
+  }
+  return `${form.value.qwenModel || 'Model A'} / ${form.value.minimaxModel || 'Model B'}`
+})
 
 async function runPipeline() {
   try {
@@ -401,6 +532,21 @@ onMounted(() => {
               <h3>阶段进度</h3>
             </div>
           </div>
+          <div class="hero-meta-grid">
+            <div>
+              <span class="meta-label">当前阶段</span>
+              <strong>{{ currentStageInfo.label }}</strong>
+            </div>
+            <div>
+              <span class="meta-label">预计剩余时间</span>
+              <strong>{{ etaLabel }}</strong>
+            </div>
+            <div>
+              <span class="meta-label">当前模型</span>
+              <strong>{{ currentModelLabel }}</strong>
+            </div>
+          </div>
+          <p class="panel-subtitle">总体进度：{{ progressPercent }}%</p>
           <div class="pipeline-row">
             <div v-for="step in pipelineSteps" :key="step.key" class="pipeline-step" :class="{ 'pipeline-step-done': step.done }">
               <span class="pipeline-badge">{{ step.done ? '已完成' : '待执行' }}</span>

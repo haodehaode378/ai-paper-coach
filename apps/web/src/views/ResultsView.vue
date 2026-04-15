@@ -9,6 +9,13 @@ import { useTraceHistory } from '../composables/useTraceHistory'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
+const STAGE_DEFAULT_MS = {
+  analyze: 180000,
+  review: 240000,
+  finalize: 300000,
+}
+const STAGE_ORDER = ['analyze', 'review', 'finalize']
+
 const CHAT_WIDTH_KEY = 'apc_report_chat_width_v1'
 const CHAT_OPEN_KEY = 'apc_report_chat_open_v1'
 const CHAT_LANG_KEY = 'apc_report_chat_lang_v1'
@@ -148,7 +155,7 @@ function addStatus(message) {
   statuses.value.unshift(`${timestamp} - ${message}`)
 }
 
-const { traces, traceError, startPolling, stopPolling, fetchTraces } = useTraceHistory({
+const { traces, traceError, runStatus, startPolling, stopPolling, fetchTraces } = useTraceHistory({
   paperIdRef: paperId,
   apiBaseRef: apiBase,
   addStatus,
@@ -266,9 +273,138 @@ const pdfPageLabel = computed(() => {
   return `${pdfPage.value} / ${pdfPageCount.value}`
 })
 
+function traceTimeMs(item) {
+  const ts = Date.parse(String(item?.created_at || ''))
+  return Number.isFinite(ts) ? ts : null
+}
+
+function stageFromPhase(phase) {
+  const p = String(phase || '').toLowerCase()
+  if (p === 'analyze') return 'analyze'
+  if (p === 'review') return 'review'
+  if (p === 'finalize' || p === 'repair') return 'finalize'
+  return null
+}
+
+const stageTraceTimes = computed(() => {
+  const groups = { analyze: [], review: [], finalize: [] }
+  for (const item of traces.value) {
+    if (String(item?.provider_slot || '').toLowerCase() === 'orchestrator') continue
+    const stage = stageFromPhase(item?.phase)
+    if (!stage) continue
+    const ts = traceTimeMs(item)
+    if (ts !== null) groups[stage].push(ts)
+  }
+  for (const key of Object.keys(groups)) {
+    groups[key].sort((a, b) => a - b)
+  }
+  return groups
+})
+
+const currentStageInfo = computed(() => {
+  if (runStatus.value !== 'running') return { key: 'done', label: '完成' }
+  const latest = [...traces.value]
+    .reverse()
+    .find((item) => String(item?.provider_slot || '').toLowerCase() !== 'orchestrator')
+  const stage = stageFromPhase(latest?.phase)
+  const key = stage || 'analyze'
+  const labelMap = { analyze: '分析', review: '审阅', finalize: '整理', done: '完成' }
+  return { key, label: labelMap[key] || key }
+})
+
+const stageDoneState = computed(() => {
+  const has = (stage) => (stageTraceTimes.value[stage] || []).length > 0
+  const done = {
+    ingest: !!paperId.value,
+    analyze: has('analyze'),
+    review: has('review'),
+    finalize: has('finalize') && runStatus.value !== 'running',
+  }
+  if (runStatus.value !== 'running' && has('finalize')) {
+    done.finalize = true
+  }
+  return done
+})
+
+const progressPercent = computed(() => {
+  const done = stageDoneState.value
+  let completed = 0
+  if (done.ingest) completed += 1
+  if (done.analyze) completed += 1
+  if (done.review) completed += 1
+  if (done.finalize) completed += 1
+  if (runStatus.value === 'running' && !done.finalize) completed += 0.35
+  return Math.max(0, Math.min(100, Math.round((completed / 4) * 100)))
+})
+
+function estimatedStageMs(stage) {
+  const times = stageTraceTimes.value[stage] || []
+  if (times.length >= 2) return Math.max(times[times.length - 1] - times[0], 0)
+  return STAGE_DEFAULT_MS[stage] || 0
+}
+
+function formatEta(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '约 0 秒'
+  const sec = Math.ceil(ms / 1000)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `约 ${h}小时${m}分`
+  if (m > 0) return `约 ${m}分${s}秒`
+  return `约 ${s}秒`
+}
+
+const etaLabel = computed(() => {
+  if (runStatus.value !== 'running') return '-'
+  const current = currentStageInfo.value.key
+  let remaining = 0
+  for (const stage of STAGE_ORDER) {
+    const times = stageTraceTimes.value[stage] || []
+    if (times.length >= 2) continue
+    if (stage === current && times.length === 1) {
+      const elapsed = Math.max(Date.now() - times[0], 0)
+      remaining += Math.max(estimatedStageMs(stage) - elapsed, 0)
+    } else {
+      remaining += estimatedStageMs(stage)
+    }
+  }
+  return formatEta(remaining)
+})
+
+const currentModelLabel = computed(() => {
+  const current = currentStageInfo.value.key
+  const modelCfg = loadModelConfig()
+  const phaseByStage = {
+    analyze: ['analyze'],
+    review: ['review'],
+    finalize: ['finalize', 'repair'],
+  }
+  const phases = phaseByStage[current] || []
+  if (phases.length > 0) {
+    const latest = [...traces.value].reverse().find((item) => {
+      const phase = String(item?.phase || '').toLowerCase()
+      const slot = String(item?.provider_slot || '').toLowerCase()
+      return phases.includes(phase) && slot !== 'orchestrator'
+    })
+    if (latest) {
+      return `${latest.provider_name || latest.provider_slot || 'unknown'} · ${latest.model || '-'}`
+    }
+  }
+  if (current === 'review') {
+    return `${modelCfg.minimaxModel || 'Model B'}（优先） / ${modelCfg.qwenModel || 'Model A'}（回退）`
+  }
+  if (current === 'analyze' || current === 'finalize') {
+    return `${modelCfg.qwenModel || 'Model A'}（优先） / ${modelCfg.minimaxModel || 'Model B'}（回退）`
+  }
+  return `${modelCfg.qwenModel || 'Model A'} / ${modelCfg.minimaxModel || 'Model B'}`
+})
+
 const reportStats = computed(() => [
   { label: '载入状态', value: report.value ? '已载入' : '未载入' },
   { label: '要求检查', value: requirementChecks.value.every((item) => item.ok) ? '通过' : '需补充' },
+  { label: '阶段进度', value: `${progressPercent.value}%（${currentStageInfo.value.label}）` },
+  { label: '预计剩余', value: etaLabel.value },
+  { label: '当前模型', value: currentModelLabel.value },
   { label: 'Trace 数量', value: String(traces.value.length) },
   { label: '记录 ID', value: activeRecordId.value || '-' },
 ])
