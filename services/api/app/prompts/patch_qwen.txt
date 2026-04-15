@@ -13,6 +13,9 @@ paper_meta, three_minute_summary, teach_classmate, reproduction_guide, reading_q
 1. 以 review.reading_qa 为主，写入最终 reading_qa。
 2. three_minute_summary.problem 必须是完整论文分析（>=800字）。
 3. reproduction_guide 全字段合计>=1000字，强调可复现实操。
+3.1 学科自适应：先判断论文类型（计算机/工程、医学、生物、心理、社科、经济等），再组织复现指导。
+3.2 若论文不以代码复现为核心，不得强行生成“代码仓库/训练命令”；应改写为样本获取与纳排标准、数据采集流程、实验/调查流程、统计方法与检验、伦理审批与知情同意、结果复核与偏倚控制等可执行步骤。
+3.3 reproduction_guide 中无证据支撑的代码细节、超参数、命令，一律写“论文中未明确说明”。
 4. method_points/key_results/limitations/commands/common_errors 必须是数组。
 5. teach_classmate 可保留为空或简短占位，不作为本阶段重点。
 6. 全中文，不编造。无依据写“论文中未明确说明”。

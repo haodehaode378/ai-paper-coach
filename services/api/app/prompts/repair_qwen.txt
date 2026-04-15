@@ -11,6 +11,8 @@ paper_meta, three_minute_summary, teach_classmate, reproduction_guide, reading_q
 1. 保持结构不变，补足字数与证据引用。
 2. 全中文，不编造；无依据写“论文中未明确说明”。
 3. 只输出 JSON，不要 markdown。
+4. 学科自适应修复：若当前复现指导偏计算机范式但论文并非代码主导，优先改为该学科可执行流程（样本/受试者、数据采集、实验或调查步骤、统计分析与显著性检验、伦理审批/知情同意、偏倚与稳健性检查）。
+5. 非代码论文中，commands 可为空数组；禁止臆造命令行、仓库地址或超参数。
 
 最低门槛：
 - three_minute_summary.problem >=800字
