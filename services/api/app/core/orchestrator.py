@@ -2,10 +2,13 @@
 
 import copy
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from app.core.model_router import ModelRouter
+
+logger = logging.getLogger(__name__)
 
 PROMPT_DIR = Path(__file__).resolve().parents[1] / "prompts"
 REQUIRED_QA_KEYS = [
@@ -480,6 +483,27 @@ def _provider_label(router: ModelRouter, slot: str) -> str:
     return f"{name}({slot})"
 
 
+def _emit_orchestrator_trace(trace_hook: Any | None, *, phase: str, event: str, payload: dict[str, Any]) -> None:
+    if not trace_hook:
+        return
+    try:
+        trace_hook(
+            {
+                "phase": phase,
+                "provider_slot": "orchestrator",
+                "provider_name": "orchestrator",
+                "model": "-",
+                "request_system": event,
+                "request_user": "",
+                "response_text": None,
+                "error_text": None,
+                "meta": payload,
+            }
+        )
+    except Exception:
+        return
+
+
 def repair_report(
     *,
     report: dict[str, Any],
@@ -606,8 +630,18 @@ def patch_draft(
     repair_chunks = []
     if isinstance(context, dict) and isinstance(context.get("chunks"), list):
         repair_chunks = context.get("chunks") or []
+    _emit_orchestrator_trace(
+        trace_hook,
+        phase="finalize",
+        event="finalize_started",
+        payload={
+            "strict": bool(strict),
+            "repair_chunk_count": len(repair_chunks),
+        },
+    )
     for provider in ("primary", "secondary"):
         try:
+            repair_triggered = False
             patched_raw = getattr(router, provider)(system=system, user=user)
             patched = normalize_report(patched_raw, source_type=draft.get("paper_meta", {}).get("source_type", "url"))
             patched["paper_meta"] = copy.deepcopy(draft.get("paper_meta", patched.get("paper_meta", {})))
@@ -633,11 +667,46 @@ def patch_draft(
                 _append_change_log(patched, f"模型调用失败，已切换：{' | '.join(errors)[:300]}")
 
             if _needs_repair(patched):
+                repair_triggered = True
+                logger.info(
+                    "finalize_repair_triggered provider=%s strict=%s",
+                    _provider_label(router, provider),
+                    bool(strict),
+                )
+                _emit_orchestrator_trace(
+                    trace_hook,
+                    phase="finalize",
+                    event="finalize_repair_triggered",
+                    payload={
+                        "provider": _provider_label(router, provider),
+                        "strict": bool(strict),
+                    },
+                )
                 patched = repair_report(report=patched, chunks=repair_chunks, model_config=model_config, trace_hook=trace_hook)
             _append_requirement_issues(patched, "阶段3输出")
+            issue_count = len(get_requirement_issues(patched))
+            logger.info(
+                "finalize_completed provider=%s strict=%s repair_triggered=%s issue_count=%s",
+                _provider_label(router, provider),
+                bool(strict),
+                repair_triggered,
+                issue_count,
+            )
+            _emit_orchestrator_trace(
+                trace_hook,
+                phase="finalize",
+                event="finalize_completed",
+                payload={
+                    "provider": _provider_label(router, provider),
+                    "strict": bool(strict),
+                    "repair_triggered": repair_triggered,
+                    "issue_count": issue_count,
+                },
+            )
             return patched
         except Exception as e:
             errors.append(f"{_provider_label(router, provider)}={str(e)}")
+            logger.warning("finalize_provider_failed provider=%s error=%s", _provider_label(router, provider), str(e))
 
     fallback = copy.deepcopy(draft)
     rev = _normalize_review_payload(review)
@@ -647,6 +716,15 @@ def patch_draft(
     if strict:
         _append_change_log(fallback, "strict=true：请人工复核关键结论与证据映射。")
     _append_requirement_issues(fallback, "阶段3回退输出")
+    _emit_orchestrator_trace(
+        trace_hook,
+        phase="finalize",
+        event="finalize_fallback",
+        payload={
+            "strict": bool(strict),
+            "errors": errors[:10],
+        },
+    )
     return fallback
 
 

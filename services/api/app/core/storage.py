@@ -82,6 +82,7 @@ def init_db() -> None:
                 request_user TEXT NOT NULL,
                 response_text TEXT,
                 error_text TEXT,
+                meta_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
@@ -108,6 +109,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_llm_traces_run_id ON llm_traces(run_id, created_at ASC);
             """
         )
+        llm_trace_cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(llm_traces)").fetchall()}
+        if "meta_json" not in llm_trace_cols:
+            conn.execute("ALTER TABLE llm_traces ADD COLUMN meta_json TEXT")
 
 
 def create_paper(source_type: str, source_name: str, local_pdf_path: str | None = None, title: str | None = None) -> dict[str, Any]:
@@ -239,6 +243,7 @@ def append_llm_trace(
     request_user: str,
     response_text: str | None = None,
     error_text: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     trace_id = str(uuid.uuid4())
     with get_conn() as conn:
@@ -246,8 +251,8 @@ def append_llm_trace(
             """
             INSERT INTO llm_traces (
                 id, run_id, phase, provider_slot, provider_name, model,
-                request_system, request_user, response_text, error_text, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_system, request_user, response_text, error_text, meta_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trace_id,
@@ -260,6 +265,7 @@ def append_llm_trace(
                 request_user,
                 response_text,
                 error_text,
+                json.dumps(meta, ensure_ascii=False) if isinstance(meta, dict) else None,
                 now_iso(),
             ),
         )
@@ -271,7 +277,19 @@ def get_llm_traces(run_id: str) -> list[dict[str, Any]]:
             "SELECT * FROM llm_traces WHERE run_id = ? ORDER BY created_at ASC",
             (run_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    traces: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        raw_meta = item.get("meta_json")
+        if isinstance(raw_meta, str) and raw_meta.strip():
+            try:
+                item["meta"] = json.loads(raw_meta)
+            except Exception:
+                item["meta"] = None
+        else:
+            item["meta"] = None
+        traces.append(item)
+    return traces
 
 
 

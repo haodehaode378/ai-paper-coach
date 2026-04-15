@@ -4,3 +4,4 @@ pydantic==2.9.2
 requests==2.32.3
 python-multipart==0.0.9
 pypdf==4.3.1
+pytest==8.3.3

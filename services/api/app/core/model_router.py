@@ -1,12 +1,16 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
+from time import perf_counter
 from typing import Any
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class ModelRouter:
@@ -153,7 +157,7 @@ class ModelRouter:
         user: str,
         timeout_sec: int = 180,
         temperature: float = 0.2,
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         if not base or not key:
             raise RuntimeError("Missing model API configuration")
 
@@ -184,13 +188,21 @@ class ModelRouter:
             ]
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         errors: list[str] = []
+        started = perf_counter()
+        retry_count = 0
+        http_attempts = 0
+        status_codes: list[int] = []
+        used_json_mode = not is_kimi_k25
+        payload_attempts = 0
 
         for idx, payload in enumerate(payloads, start=1):
+            payload_attempts = idx
             # Retry logic for temporary errors (429, 503, 504)
             max_retries = 3
             base_delay = 2  # seconds
             
             for retry in range(max_retries):
+                http_attempts += 1
                 try:
                     res = requests.post(url, json=payload, headers=headers, timeout=(8, timeout_sec))
                 except Exception as e:
@@ -206,9 +218,11 @@ class ModelRouter:
                 if not res.ok:
                     body = (res.text or "")[:300]
                     status_code = res.status_code
+                    status_codes.append(int(status_code))
                     
                     # Handle temporary service errors with exponential backoff
                     if status_code in {429, 503, 504} and retry < max_retries - 1:
+                        retry_count += 1
                         # Extract Retry-After header if available
                         retry_after = res.headers.get("Retry-After")
                         if retry_after:
@@ -231,7 +245,14 @@ class ModelRouter:
 
                 try:
                     data = res.json()
-                    return data["choices"][0]["message"]["content"]
+                    return data["choices"][0]["message"]["content"], {
+                        "elapsed_ms": int((perf_counter() - started) * 1000),
+                        "retry_count": retry_count,
+                        "http_attempts": http_attempts,
+                        "payload_attempts": payload_attempts,
+                        "status_codes": status_codes,
+                        "used_json_mode": used_json_mode,
+                    }
                 except Exception as e:
                     body = (res.text or "")[:300]
                     errors.append(f"attempt{idx}: invalid_response={e}, body={body}")
@@ -243,7 +264,17 @@ class ModelRouter:
             if idx == 1 and any(f"attempt{idx}: status=" in e for e in errors):
                 continue
 
-        raise RuntimeError("Model API call failed: " + " | ".join(errors))
+        call_meta = {
+            "elapsed_ms": int((perf_counter() - started) * 1000),
+            "retry_count": retry_count,
+            "http_attempts": http_attempts,
+            "payload_attempts": payload_attempts,
+            "status_codes": status_codes,
+            "used_json_mode": used_json_mode,
+        }
+        err = RuntimeError("Model API call failed: " + " | ".join(errors))
+        setattr(err, "call_meta", call_meta)
+        raise err
 
     @staticmethod
     def safe_json(text: str) -> dict[str, Any]:
@@ -399,10 +430,11 @@ class ModelRouter:
         if not p:
             raise RuntimeError(f"Unknown provider slot: {slot}")
 
+        call_meta: dict[str, Any] = {}
         try:
             timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
             temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
-            content = self._chat(
+            content, call_meta = self._chat(
                 base=p["base"],
                 key=p["key"],
                 model=p["model"],
@@ -421,9 +453,11 @@ class ModelRouter:
                 system=system,
                 user=user,
                 response_text=text,
+                meta=call_meta,
             )
             return text
         except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
             self._emit_trace(
                 slot=slot,
                 provider_name=p.get("name") or slot,
@@ -431,6 +465,7 @@ class ModelRouter:
                 system=system,
                 user=user,
                 error_text=str(e),
+                meta=err_meta,
             )
             raise RuntimeError(
                 f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
@@ -484,10 +519,11 @@ class ModelRouter:
         if not p:
             raise RuntimeError(f"Unknown provider slot: {slot}")
 
+        call_meta: dict[str, Any] = {}
         try:
             timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
             temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
-            content = self._chat(
+            content, call_meta = self._chat(
                 base=p["base"],
                 key=p["key"],
                 model=p["model"],
@@ -505,7 +541,18 @@ class ModelRouter:
                 system=system,
                 user=user,
                 response_text=content,
+                meta=call_meta,
             )
+            if (self.trace_phase or "").lower() == "finalize":
+                logger.info(
+                    "finalize_model_call slot=%s provider=%s model=%s elapsed_ms=%s retries=%s attempts=%s",
+                    slot,
+                    p.get("name") or slot,
+                    p.get("model") or "",
+                    call_meta.get("elapsed_ms"),
+                    call_meta.get("retry_count"),
+                    call_meta.get("http_attempts"),
+                )
             try:
                 parsed = self.safe_json(content)
                 if self._looks_like_error_payload(parsed):
@@ -517,7 +564,7 @@ class ModelRouter:
                 if not repair_source:
                     raise RuntimeError("empty_model_output_for_json_repair")
                 repair_user = f"请把下面文本修复为合法 JSON 对象：\n\n{repair_source}"
-                repaired = self._chat(
+                repaired, repair_meta = self._chat(
                     base=p["base"],
                     key=p["key"],
                     model=p["model"],
@@ -533,12 +580,18 @@ class ModelRouter:
                     system=repair_system,
                     user=repair_user,
                     response_text=repaired,
+                    meta={
+                        **(call_meta if isinstance(call_meta, dict) else {}),
+                        "json_repair_call": True,
+                        "repair_call_meta": repair_meta,
+                    },
                 )
                 parsed = self.safe_json(repaired)
                 if self._looks_like_error_payload(parsed):
                     raise RuntimeError("invalid_json_payload_after_repair")
                 return parsed
         except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
             self._emit_trace(
                 slot=slot,
                 provider_name=p.get("name") or slot,
@@ -546,6 +599,7 @@ class ModelRouter:
                 system=system,
                 user=user,
                 error_text=str(e),
+                meta=err_meta,
             )
             raise RuntimeError(
                 f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
@@ -555,9 +609,10 @@ class ModelRouter:
         if not p:
             raise RuntimeError(f"Unknown provider slot: {slot}")
 
+        call_meta: dict[str, Any] = {}
         try:
             ping_system = system if isinstance(system, str) and system.strip() else "You are a helpful assistant."
-            content = self._chat(
+            content, call_meta = self._chat(
                 base=p["base"],
                 key=p["key"],
                 model=p["model"],
@@ -576,9 +631,11 @@ class ModelRouter:
                 system=system,
                 user=user,
                 response_text=text,
+                meta=call_meta,
             )
             return text
         except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
             self._emit_trace(
                 slot=slot,
                 provider_name=p.get("name") or slot,
@@ -586,6 +643,7 @@ class ModelRouter:
                 system=system,
                 user=user,
                 error_text=str(e),
+                meta=err_meta,
             )
             raise RuntimeError(
                 f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
@@ -601,6 +659,7 @@ class ModelRouter:
         user: str,
         response_text: str | None = None,
         error_text: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         if not self.trace_hook:
             return
@@ -614,6 +673,7 @@ class ModelRouter:
                 "request_user": user,
                 "response_text": response_text,
                 "error_text": error_text,
+                "meta": meta if isinstance(meta, dict) else None,
             }
         )
 

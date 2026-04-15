@@ -108,9 +108,21 @@ cp .env.example .env
 ```
 按需填写模型配置；不填也可在 MVP 模式下运行部分流程。
 
+安全相关可选配置：
+- `APC_ALLOWED_ORIGINS`：CORS 白名单，逗号分隔（如 `http://localhost:5500,https://your-domain.com`）
+- `APC_MAX_UPLOAD_MB`：上传 PDF 大小限制（默认 `20`）
+- `APC_REQUIRE_API_KEY`：是否开启 API Key 鉴权（`0/1`）
+- `APC_API_KEY`：鉴权 key（请求头使用 `x-api-key`）
+
 #### 4) 一键启动
 ```bash
 python run.py
+```
+
+#### 5) 运行后端测试（新增）
+```bash
+cd services/api
+pytest -q
 ```
 
 ### 手动启动（可选）
@@ -200,7 +212,17 @@ npm install
 
 # run all
 python run.py
+
+# backend tests
+cd services/api
+pytest -q
 ```
+
+Optional security env vars in `.env`:
+- `APC_ALLOWED_ORIGINS`: comma-separated CORS whitelist
+- `APC_MAX_UPLOAD_MB`: upload limit in MB (default `20`)
+- `APC_REQUIRE_API_KEY`: enable API key auth (`0/1`)
+- `APC_API_KEY`: expected value in `x-api-key` header
 
 ### Key APIs
 - `GET /health`

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -36,12 +37,27 @@ def _is_enveloped(obj: Any) -> bool:
     return isinstance(obj, dict) and {"success", "data", "error"}.issubset(set(obj.keys()))
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    value = os.getenv(name, default).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _allowed_origins_from_env() -> list[str]:
+    raw = (os.getenv("APC_ALLOWED_ORIGINS", "*") or "*").strip()
+    if raw == "*":
+        return ["*"]
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or ["*"]
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="AI Paper Coach API", version="0.1.0")
+    api_key_enabled = _truthy_env("APC_REQUIRE_API_KEY", "0")
+    api_key = (os.getenv("APC_API_KEY", "") or "").strip()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_allowed_origins_from_env(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -62,6 +78,21 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def envelope_json_response(request: Request, call_next):
+        if api_key_enabled and request.method != "OPTIONS":
+            path = request.url.path
+            if not path.startswith(("/docs", "/redoc", "/openapi.json")) and path != "/health":
+                if not api_key:
+                    return JSONResponse(
+                        status_code=500,
+                        content=_failure("api key auth enabled but APC_API_KEY is empty", code=500),
+                    )
+                header_key = (request.headers.get("x-api-key", "") or "").strip()
+                if header_key != api_key:
+                    return JSONResponse(
+                        status_code=401,
+                        content=_failure("unauthorized: invalid api key", code=401),
+                    )
+
         response = await call_next(request)
 
         # Keep docs/openapi untouched.
