@@ -23,7 +23,6 @@ class ModelRouter:
         cfg = model_config or {}
         self.trace_hook = trace_hook
         self.trace_phase = trace_phase
-        use_env = not bool(cfg)
 
         def _first_provider_cfg(*keys: str) -> dict[str, Any]:
             for key in keys:
@@ -35,17 +34,18 @@ class ModelRouter:
         def _pick(cfg_value: Any, env_name: str, default: str = "") -> str:
             if isinstance(cfg_value, str) and cfg_value.strip():
                 return cfg_value.strip()
-            if use_env:
-                env_val = (os.getenv(env_name, "") or "").strip()
-                if env_val:
-                    return env_val
+            # Per-field fallback: even when request-level model_config exists,
+            # allow env vars to fill missing/empty fields (especially API keys).
+            env_val = (os.getenv(env_name, "") or "").strip()
+            if env_val:
+                return env_val
             return default
 
         def _pick_int(cfg_value: Any, env_name: str, default: int) -> int:
             raw = None
             if cfg_value is not None:
                 raw = str(cfg_value).strip()
-            elif use_env:
+            else:
                 raw = (os.getenv(env_name, "") or "").strip() or None
             if not raw:
                 return default
@@ -54,6 +54,13 @@ class ModelRouter:
                 return v if v > 0 else default
             except Exception:
                 return default
+
+        def _clean_api_key(value: Any) -> str:
+            key = str(value or "").strip()
+            # Tolerate accidentally pasted "Bearer <key>".
+            if key.lower().startswith("bearer "):
+                key = key[7:].strip()
+            return key
 
         primary_cfg = _first_provider_cfg("primary", "provider_a", "qwen")
         secondary_cfg = _first_provider_cfg("secondary", "provider_b", "minimax")
@@ -66,7 +73,7 @@ class ModelRouter:
                 "slot": "primary",
                 "name": primary_name,
                 "base": _pick(primary_cfg.get("base_url"), "QWEN_API_BASE", "").rstrip("/"),
-                "key": _pick(primary_cfg.get("api_key"), "QWEN_API_KEY", ""),
+                "key": _clean_api_key(_pick(primary_cfg.get("api_key"), "QWEN_API_KEY", "")),
                 "model": _pick(primary_cfg.get("model"), "QWEN_MODEL", "qwen-plus"),
                 "timeout_sec": _pick_int(primary_cfg.get("timeout_sec"), "QWEN_TIMEOUT_SEC", 90),
             },
@@ -74,7 +81,7 @@ class ModelRouter:
                 "slot": "secondary",
                 "name": secondary_name,
                 "base": _pick(secondary_cfg.get("base_url"), "MINIMAX_API_BASE", "").rstrip("/"),
-                "key": _pick(secondary_cfg.get("api_key"), "MINIMAX_API_KEY", ""),
+                "key": _clean_api_key(_pick(secondary_cfg.get("api_key"), "MINIMAX_API_KEY", "")),
                 "model": _pick(secondary_cfg.get("model"), "MINIMAX_MODEL", "MiniMax-M1"),
                 "timeout_sec": _pick_int(secondary_cfg.get("timeout_sec"), "MINIMAX_TIMEOUT_SEC", 300),
             },

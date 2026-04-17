@@ -56,6 +56,37 @@ const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 380))
 const chatListRef = ref(null)
 const chatMessages = ref([])
 const chatHistoryScope = ref('')
+const quickPromptOptions = [
+  {
+    label: '有没有相关论文可对比？',
+    text: '请基于这篇论文，推荐5篇最相关的论文，并说明每篇与本文的关系（任务、方法、数据集、结论差异）。',
+  },
+  {
+    label: '这篇论文的主要创新是什么？',
+    text: '请用3点总结这篇论文的核心创新，并解释它们相较于已有方法的增量价值。',
+  },
+  {
+    label: '方法有什么潜在缺陷？',
+    text: '请从假设、实验设计、泛化能力和工程可实现性4个角度，分析该方法的潜在风险与缺陷。',
+  },
+  {
+    label: '实验是否足够支撑结论？',
+    text: '请审查实验是否充分支撑论文结论，指出关键证据、薄弱环节，以及还缺哪些补充实验。',
+  },
+  {
+    label: '如果我要复现，先做什么？',
+    text: '请给我一份按优先级排序的复现清单：环境准备、数据处理、训练、评估、排错，每步给出可执行建议。',
+  },
+  {
+    label: '适合做哪些后续研究？',
+    text: '请基于本文提出5个可落地的后续研究方向，并说明每个方向的研究问题、可行实验和预期贡献。',
+  },
+  {
+    label: '和经典方法相比优势在哪？',
+    text: '请把本文与该方向2-3个经典方法做对比，重点说明性能、复杂度、鲁棒性和适用场景的差异。',
+  },
+]
+const selectedQuickPrompt = ref(quickPromptOptions[0]?.text || '')
 let resizing = false
 
 const questionMeta = [
@@ -467,6 +498,11 @@ function stopResize() {
 
 function fillPrompt(text) {
   chatInput.value = text
+}
+
+function applyQuickPrompt() {
+  if (!selectedQuickPrompt.value) return
+  fillPrompt(selectedQuickPrompt.value)
 }
 
 function scrollChatToBottom() {
@@ -1003,6 +1039,12 @@ watch(pdfPage, async () => {
             </div>
 
             <div class="chat-input-area">
+              <div class="chat-quick-tools">
+                <select v-model="selectedQuickPrompt" class="chat-context-select chat-quick-select">
+                  <option v-for="item in quickPromptOptions" :key="item.label" :value="item.text">{{ item.label }}</option>
+                </select>
+                <button class="button button-secondary" type="button" @click="applyQuickPrompt">插入问题</button>
+              </div>
               <textarea v-model="chatInput" class="chat-textarea" rows="5" placeholder="基于当前报告向 AI 提问..." @keydown.ctrl.enter.prevent="sendChat" />
               <div class="chat-input-actions">
                 <span class="sidebar-meta">{{ chatLoading ? '正在流式生成回答...' : `Ctrl + Enter 发送 · ${chatContextSummary}` }}</span>

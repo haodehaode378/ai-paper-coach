@@ -840,6 +840,17 @@ button {
   gap: 8px;
 }
 
+.chat-quick-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chat-quick-select {
+  flex: 1 1 auto;
+  min-height: 38px;
+}
+
 .chat-textarea {
   width: 100%;
   resize: vertical;
@@ -875,6 +886,14 @@ button {
 
   .result-chat-resizer {
     display: none;
+  }
+
+  .chat-quick-tools {
+    flex-wrap: wrap;
+  }
+
+  .chat-quick-tools .button {
+    width: 100%;
   }
 }
 .chat-header-actions {

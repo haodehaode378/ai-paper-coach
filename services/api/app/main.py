@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +12,32 @@ from fastapi.responses import JSONResponse, Response
 
 from app.routers import analyze, chat, export, ingest, records
 from app.core.storage import init_db, mark_stale_pipeline_jobs
+
+
+def _load_local_env_file() -> None:
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    except Exception:
+        # Keep startup robust even if .env content is malformed.
+        return
+
+
+_load_local_env_file()
 
 
 def _success(data: Any) -> dict[str, Any]:
