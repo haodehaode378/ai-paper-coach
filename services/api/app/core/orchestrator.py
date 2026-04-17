@@ -773,56 +773,76 @@ def to_markdown(report: dict[str, Any]) -> str:
 
     def bullets(items: list[Any]) -> str:
         if not items:
-            return "- -"
+            return "-"
         return "\n".join([f"- {x}" for x in items])
 
-    return f"""
-# {report.get('paper_meta', {}).get('title', 'Paper Report')}
+    qa_blocks = [
+        ("q1_problem_and_novelty", "1 论文试图解决什么问题？这是否是一个新的问题？"),
+        ("q2_related_work_and_researchers", "2 有哪些相关研究？如何归类？谁是这一课题在领域内值得关注的研究者（公司）？"),
+        ("q3_key_idea", "3 论文中提到的解决方案之关键是什么？"),
+        ("q4_experiment_design", "4 论文中的实验是如何设计的？"),
+        ("q5_dataset_and_code", "5 用于定量评估的数据集是什么？代码有没有开源？"),
+        ("q6_support_for_claims", "6 文中的实验及结果有没有很好地支持需要验证的科学假设/提出方案？"),
+        ("q7_contribution_and_next_step", "7 这篇论文到底有什么贡献？下一步呢？有什么工作可以继续深入？"),
+    ]
 
-## 论文分析（核心）
-{s.get('problem', '-')}
+    lines: list[str] = [
+        f"# {report.get('paper_meta', {}).get('title', 'Paper Report')}",
+        "",
+        "## 论文分析（核心）",
+        str(s.get("problem", "-") or "-"),
+        "",
+        "## 方法要点",
+        bullets(s.get("method_points", [])),
+        "",
+        "## 关键结果",
+        bullets(s.get("key_results", [])),
+        "",
+        "## 局限性",
+        bullets(s.get("limitations", [])),
+        "",
+        "## 讲给同学听",
+        "### 30秒",
+        str(t.get("elevator_30s", "-") or "-"),
+        "",
+        "### 3分钟",
+        str(t.get("classroom_3min", "-") or "-"),
+        "",
+        "### 类比",
+        str(t.get("analogy", "-") or "-"),
+        "",
+        "## 复现指导",
+        "### Environment",
+        str(r.get("environment", "-") or "-"),
+        "",
+        "### Dataset",
+        str(r.get("dataset", "-") or "-"),
+        "",
+        "### Commands",
+        bullets(r.get("commands", [])),
+        "",
+        "### Common Errors",
+        bullets(r.get("common_errors", [])),
+        "",
+        "## 七问",
+    ]
 
-## 方法要点
-{bullets(s.get('method_points', []))}
+    for idx, (key, question) in enumerate(qa_blocks, start=1):
+        lines.extend(
+            [
+                f"### 第{idx}问",
+                f"问题：{question}",
+                "",
+                f"回答：{str(q.get(key, '-') or '-')}",
+                "",
+            ]
+        )
 
-## 关键结果
-{bullets(s.get('key_results', []))}
+    lines.extend(
+        [
+            "## Change Log",
+            bullets(report.get("change_log", [])),
+        ]
+    )
 
-## 局限性
-{bullets(s.get('limitations', []))}
-
-## 讲给同学听
-### 30秒
-{t.get('elevator_30s', '-')}
-
-### 3分钟
-{t.get('classroom_3min', '-')}
-
-### 类比
-{t.get('analogy', '-')}
-
-## 复现指导
-### Environment
-{r.get('environment', '-')}
-
-### Dataset
-{r.get('dataset', '-')}
-
-### Commands
-{bullets(r.get('commands', []))}
-
-### Common Errors
-{bullets(r.get('common_errors', []))}
-
-## 七问
-1. {q.get('q1_problem_and_novelty', '-')}
-2. {q.get('q2_related_work_and_researchers', '-')}
-3. {q.get('q3_key_idea', '-')}
-4. {q.get('q4_experiment_design', '-')}
-5. {q.get('q5_dataset_and_code', '-')}
-6. {q.get('q6_support_for_claims', '-')}
-7. {q.get('q7_contribution_and_next_step', '-')}
-
-## Change Log
-{bullets(report.get('change_log', []))}
-""".strip()
+    return "\n".join(lines).strip()

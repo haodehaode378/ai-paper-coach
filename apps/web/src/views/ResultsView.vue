@@ -268,6 +268,12 @@ const pdfPreviewUrl = computed(() => {
   return `${base}/papers/${encodeURIComponent(paperId.value)}/pdf#view=FitH`
 })
 
+const exportPdfUrl = computed(() => {
+  if (!paperId.value || !apiBase.value) return ''
+  const base = String(apiBase.value).trim().replace(/\/$/, '')
+  return `${base}/export/${encodeURIComponent(paperId.value)}.pdf`
+})
+
 const pdfPageLabel = computed(() => {
   if (!pdfPageCount.value) return '0 / 0'
   return `${pdfPage.value} / ${pdfPageCount.value}`
@@ -692,6 +698,15 @@ async function saveCurrentReport() {
   }
 }
 
+function downloadSharePackPdf() {
+  if (!exportPdfUrl.value) {
+    addStatus('当前没有可导出的报告 PDF。')
+    return
+  }
+  window.open(exportPdfUrl.value, '_blank', 'noopener,noreferrer')
+  addStatus('已触发 PDF 导出下载。')
+}
+
 async function loadReport() {
   reportError.value = ''
   report.value = null
@@ -840,6 +855,7 @@ watch(pdfPage, async () => {
               </div>
               <div class="section-actions">
                 <button class="button button-secondary" @click="saveCurrentReport">保存报告</button>
+                <button class="button button-secondary" @click="downloadSharePackPdf">下载汇报 PDF（传播版）</button>
               </div>
             </section>
 

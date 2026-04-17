@@ -30,7 +30,7 @@ def _find_npm() -> str | None:
 
 
 def _preflight() -> str:
-    required = ["fastapi", "uvicorn", "requests"]
+    required = ["fastapi", "uvicorn", "requests", "reportlab"]
     missing = [name for name in required if not _check_dependency(name)]
     if missing:
         joined = ", ".join(missing)

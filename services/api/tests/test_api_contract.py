@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.core.storage import create_paper, create_run
+from app.core.storage import create_paper, create_run, save_final
+from app.routers import export as export_router
 
 
 def _assert_envelope(payload: dict):
@@ -63,3 +64,48 @@ def test_report_returns_404_when_run_has_no_outputs(client: TestClient):
     assert payload["success"] is False
     assert payload["error"]["code"] == 404
     assert payload["error"]["message"] == "no report data"
+
+
+def test_export_pdf_returns_binary_pdf(client: TestClient, monkeypatch):
+    monkeypatch.setattr(export_router, "_markdown_to_pdf_bytes", lambda _text: b"%PDF-1.4\nmock\n")
+
+    paper = create_paper(source_type="url", source_name="https://example.com/paper")
+    run = create_run(paper_id=paper["id"], mode="deep")
+    save_final(
+        run["id"],
+        {
+            "paper_meta": {"title": "Demo Paper", "authors": [], "year": "2026", "source_type": "url"},
+            "three_minute_summary": {
+                "problem": "demo",
+                "method_points": ["point"],
+                "key_results": ["result"],
+                "limitations": ["limit"],
+                "who_should_read": "reader",
+            },
+            "teach_classmate": {"elevator_30s": "demo", "classroom_3min": "demo", "analogy": "demo", "qa": []},
+            "reproduction_guide": {
+                "environment": "python",
+                "dataset": "demo",
+                "commands": ["python run.py"],
+                "key_hyperparams": ["lr=1e-4"],
+                "expected_range": "ok",
+                "common_errors": ["none"],
+            },
+            "reading_qa": {
+                "q1_problem_and_novelty": "demo",
+                "q2_related_work_and_researchers": "demo",
+                "q3_key_idea": "demo",
+                "q4_experiment_design": "demo",
+                "q5_dataset_and_code": "demo",
+                "q6_support_for_claims": "demo",
+                "q7_contribution_and_next_step": "demo",
+            },
+            "evidence_refs": [{"claim": "demo", "section": "ABSTRACT"}],
+            "change_log": [],
+        },
+    )
+
+    resp = client.get(f"/export/{paper['id']}.pdf")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type", "").startswith("application/pdf")
+    assert resp.content.startswith(b"%PDF")
