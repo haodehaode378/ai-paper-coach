@@ -8,6 +8,8 @@ import { buildModelConfig, loadLastResult, loadModelConfig } from '../lib/storag
 import { useTraceHistory } from '../composables/useTraceHistory'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 
 const STAGE_DEFAULT_MS = {
   analyze: 180000,
@@ -24,6 +26,29 @@ const CHAT_HISTORY_STORE_KEY = 'apc_report_chat_history_v1'
 const CHAT_HISTORY_MAX_MESSAGES = 120
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+const md = new MarkdownIt({
+  html: false,
+  linkify: true,
+  typographer: false,
+  breaks: true,
+})
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx]
+  const info = String(token.info || '').trim()
+  const lang = info.split(/\s+/)[0] || ''
+  const code = String(token.content || '')
+  const escapedCode = md.utils.escapeHtml(code)
+  const encodedCode = encodeURIComponent(code)
+  return [
+    '<div class="chat-code-block">',
+    '<div class="chat-code-toolbar">',
+    `<span class="chat-code-lang">${lang || 'text'}</span>`,
+    `<button type="button" class="chat-code-copy-btn" data-code="${encodedCode}">复制</button>`,
+    '</div>',
+    `<pre><code class="language-${lang}">${escapedCode}</code></pre>`,
+    '</div>',
+  ].join('')
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -52,7 +77,7 @@ const includePapersContext = ref(true)
 const chatLanguage = ref(localStorage.getItem(CHAT_LANG_KEY) || 'zh')
 const chatModelSlot = ref(localStorage.getItem(CHAT_SLOT_KEY) || 'primary')
 const chatOpen = ref(localStorage.getItem(CHAT_OPEN_KEY) !== '0')
-const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 380))
+const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 460))
 const chatListRef = ref(null)
 const chatMessages = ref([])
 const chatHistoryScope = ref('')
@@ -200,6 +225,45 @@ function textLen(value) {
   return String(value).trim().length
 }
 
+function renderChatMarkdown(content) {
+  const source = String(content || '')
+  const rendered = md.render(source)
+  return DOMPurify.sanitize(rendered)
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || '')
+  if (!value) return false
+  if (navigator?.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return true
+  }
+  const ta = document.createElement('textarea')
+  ta.value = value
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(ta)
+  return ok
+}
+
+async function handleChatMarkdownClick(event) {
+  const target = event?.target
+  if (!(target instanceof Element)) return
+  const btn = target.closest('.chat-code-copy-btn')
+  if (!btn) return
+  const encoded = btn.getAttribute('data-code') || ''
+  const text = decodeURIComponent(encoded)
+  try {
+    const ok = await copyTextToClipboard(text)
+    addStatus(ok ? '代码已复制到剪贴板。' : '复制失败，请手动复制。')
+  } catch {
+    addStatus('复制失败，请手动复制。')
+  }
+}
+
 function asArray(value) {
   return Array.isArray(value) ? value : []
 }
@@ -339,7 +403,16 @@ const stageTraceTimes = computed(() => {
 })
 
 const currentStageInfo = computed(() => {
-  if (runStatus.value !== 'running') return { key: 'done', label: '完成' }
+  if (runStatus.value === 'failed') return { key: 'failed', label: '失败' }
+  if (runStatus.value !== 'running') {
+    const has = (stage) => (stageTraceTimes.value[stage] || []).length > 0
+    const allDone =
+      !!paperId.value &&
+      has('analyze') &&
+      has('review') &&
+      has('finalize')
+    return allDone ? { key: 'done', label: '完成' } : { key: 'stopped', label: '已停止' }
+  }
   const latest = [...traces.value]
     .reverse()
     .find((item) => String(item?.provider_slot || '').toLowerCase() !== 'orchestrator')
@@ -484,7 +557,7 @@ function startResize(event) {
 
 function onResize(event) {
   if (!resizing) return
-  const width = Math.min(Math.max(window.innerWidth - event.clientX - 24, 320), 620)
+  const width = Math.min(Math.max(window.innerWidth - event.clientX - 24, 360), 760)
   chatWidth.value = width
   localStorage.setItem(CHAT_WIDTH_KEY, String(width))
 }
@@ -527,10 +600,36 @@ function buildChatPayload(messages) {
 function extractErrorText(text) {
   try {
     const parsed = JSON.parse(text)
-    return parsed?.detail || parsed?.error || text
+    if (typeof parsed === 'string') return parsed
+    if (parsed && typeof parsed === 'object') {
+      const nestedError = parsed.error
+      if (nestedError && typeof nestedError === 'object') {
+        if (typeof nestedError.message === 'string' && nestedError.message.trim()) {
+          return nestedError.message
+        }
+        if (typeof nestedError.detail === 'string' && nestedError.detail.trim()) {
+          return nestedError.detail
+        }
+      }
+      if (typeof parsed.detail === 'string' && parsed.detail.trim()) return parsed.detail
+      if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message
+    }
+    return text
   } catch {
     return text
   }
+}
+
+function toPdfFriendlyError(rawMessage) {
+  const message = String(rawMessage || '').trim()
+  const lower = message.toLowerCase()
+  if (lower.includes('pdf not found')) {
+    return '未找到该论文的原始 PDF 文件。通常是历史记录仍在，但本地 PDF 已被删除。请重新上传该论文，或删除这条历史记录。'
+  }
+  if (lower.includes('paper not found')) {
+    return '未找到该论文记录。请回到控制台重新导入论文。'
+  }
+  return message || 'PDF 加载失败'
 }
 
 async function renderPdfPage() {
@@ -556,7 +655,7 @@ async function renderPdfPage() {
     canvas.height = Math.floor(viewport.height)
     await page.render({ canvasContext: context, viewport }).promise
   } catch (error) {
-    pdfError.value = error?.message || 'PDF 加载失败'
+    pdfError.value = toPdfFriendlyError(error?.message)
   }
 }
 
@@ -597,7 +696,7 @@ async function loadPdfDocument(force = false) {
     pdfPage.value = 1
     loadedPdfKey.value = key
   } catch (error) {
-    pdfError.value = error?.message || 'PDF 加载失败'
+    pdfError.value = toPdfFriendlyError(error?.message)
   } finally {
     pdfLoading.value = false
   }
@@ -988,7 +1087,12 @@ watch(pdfPage, async () => {
             </section>
           </section>
 
-          <div v-if="chatOpen" class="result-chat-resizer" @pointerdown="startResize"></div>
+          <div
+            v-if="chatOpen"
+            class="result-chat-resizer"
+            :style="{ right: `${chatWidth + 18}px` }"
+            @pointerdown="startResize"
+          ></div>
 
           <aside v-if="chatOpen" class="result-chat-pane panel-soft" :style="{ width: `${chatWidth}px` }">
             <div class="chat-header">
@@ -1002,49 +1106,60 @@ watch(pdfPage, async () => {
               </div>
             </div>
 
-            <div class="chat-context-strip">
-              <label class="chat-context-toggle">
-                <input v-model="includeHistoryContext" type="checkbox" />
-                <span>&#x5E26;&#x5165;&#x5386;&#x53F2;&#x8BB0;&#x5F55;</span>
-              </label>
-              <label class="chat-context-toggle">
-                <input v-model="includePapersContext" type="checkbox" />
-                <span>&#x5E26;&#x5165;&#x8BBA;&#x6587;&#x5E93;</span>
-              </label>
-              <label class="chat-context-toggle">
-                <span>&#x56DE;&#x7B54;&#x8BED;&#x8A00;</span>
-                <select v-model="chatLanguage" class="chat-context-select">
-                  <option value="zh">&#x4E2D;&#x6587;</option>
-                  <option value="en">English</option>
-                  <option value="follow_user">&#x8DDF;&#x968F;&#x63D0;&#x95EE;&#x8BED;&#x8A00;</option>
-                </select>
-              </label>
-              <label class="chat-context-toggle">
-                <span>&#x6A21;&#x578B;&#x901A;&#x9053;</span>
-                <select v-model="chatModelSlot" class="chat-context-select">
-                  <option value="primary">&#x6A21;&#x578B; A (Primary)</option>
-                  <option value="secondary">&#x6A21;&#x578B; B (Secondary)</option>
-                </select>
-              </label>
-              <span class="sidebar-meta">&#x4E0A;&#x4E0B;&#x6587;&#xFF1A;{{ chatContextSummary }}</span>
-            </div>
+            <details class="chat-fold-card">
+              <summary class="chat-fold-summary">
+                会话设置
+                <span class="sidebar-meta">上下文：{{ chatContextSummary }}</span>
+              </summary>
+              <div class="chat-context-strip">
+                <label class="chat-context-toggle">
+                  <input v-model="includeHistoryContext" type="checkbox" />
+                  <span>&#x5E26;&#x5165;&#x5386;&#x53F2;&#x8BB0;&#x5F55;</span>
+                </label>
+                <label class="chat-context-toggle">
+                  <input v-model="includePapersContext" type="checkbox" />
+                  <span>&#x5E26;&#x5165;&#x8BBA;&#x6587;&#x5E93;</span>
+                </label>
+                <label class="chat-context-toggle">
+                  <span>&#x56DE;&#x7B54;&#x8BED;&#x8A00;</span>
+                  <select v-model="chatLanguage" class="chat-context-select">
+                    <option value="zh">&#x4E2D;&#x6587;</option>
+                    <option value="en">English</option>
+                    <option value="follow_user">&#x8DDF;&#x968F;&#x63D0;&#x95EE;&#x8BED;&#x8A00;</option>
+                  </select>
+                </label>
+                <label class="chat-context-toggle">
+                  <span>&#x6A21;&#x578B;&#x901A;&#x9053;</span>
+                  <select v-model="chatModelSlot" class="chat-context-select">
+                    <option value="primary">&#x6A21;&#x578B; A (Primary)</option>
+                    <option value="secondary">&#x6A21;&#x578B; B (Secondary)</option>
+                  </select>
+                </label>
+              </div>
+            </details>
 
-            <div ref="chatListRef" class="chat-message-list">
+            <div ref="chatListRef" class="chat-message-list" @click="handleChatMarkdownClick">
               <div v-for="(message, index) in chatMessages" :key="`${message.role}-${index}`" class="chat-message" :class="message.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'">
                 <p class="chat-role">{{ message.role === 'user' ? '我' : 'AI 助手' }}</p>
                 <div class="chat-bubble">
-                  <pre>{{ message.content }}</pre>
+                  <div class="chat-markdown" v-html="renderChatMarkdown(message.content)"></div>
                 </div>
               </div>
             </div>
 
             <div class="chat-input-area">
-              <div class="chat-quick-tools">
-                <select v-model="selectedQuickPrompt" class="chat-context-select chat-quick-select">
-                  <option v-for="item in quickPromptOptions" :key="item.label" :value="item.text">{{ item.label }}</option>
-                </select>
-                <button class="button button-secondary" type="button" @click="applyQuickPrompt">插入问题</button>
-              </div>
+              <details class="chat-fold-card">
+                <summary class="chat-fold-summary">
+                  快捷提问
+                  <span class="sidebar-meta">可选模板 {{ quickPromptOptions.length }} 条</span>
+                </summary>
+                <div class="chat-quick-tools">
+                  <select v-model="selectedQuickPrompt" class="chat-context-select chat-quick-select">
+                    <option v-for="item in quickPromptOptions" :key="item.label" :value="item.text">{{ item.label }}</option>
+                  </select>
+                  <button class="button button-secondary" type="button" @click="applyQuickPrompt">插入问题</button>
+                </div>
+              </details>
               <textarea v-model="chatInput" class="chat-textarea" rows="5" placeholder="基于当前报告向 AI 提问..." @keydown.ctrl.enter.prevent="sendChat" />
               <div class="chat-input-actions">
                 <span class="sidebar-meta">{{ chatLoading ? '正在流式生成回答...' : `Ctrl + Enter 发送 · ${chatContextSummary}` }}</span>
