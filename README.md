@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img alt="status" src="https://img.shields.io/badge/status-MVP-2B7FFF">
+  <img alt="status" src="https://img.shields.io/badge/status-Beta-2B7FFF">
   <img alt="frontend" src="https://img.shields.io/badge/frontend-Vue%203-42B883">
   <img alt="backend" src="https://img.shields.io/badge/backend-FastAPI-009688">
   <img alt="pdf" src="https://img.shields.io/badge/PDF-pdf.js-EA4335">
@@ -52,9 +52,10 @@ AI Paper Coach 是一个面向学生和研究者的论文阅读与复现助手�
 - 一条流完成：`导入 -> 分析 -> 审阅 -> 整理 -> 报告`
 - 七问结构化输出：更适合课堂汇报、组会复述、复现实验
 - 原文阅读联动：报告和 PDF 原文可对照查看
+- RAG 问答：基于论文原文的检索增强问答，支持跨语言查询（中文问英文论文）
 - 可追踪可回放：保留 trace、历史记录、已保存报告
 - 支持删除管理：历史记录和已保存报告都可删除
-- 新增 API 连通性验证：一键检查后端是否可达
+- API 连通性验证：一键检查后端是否可达
 
 ### 最新界面截图
 #### 整体界面
@@ -94,10 +95,10 @@ AI Paper Coach 是一个面向学生和研究者的论文阅读与复现助手�
 - 论文导入：URL / 本地 PDF
 - 双模型协作：支持模型校验与配置保存
 - 七问阅读框架：横向切换，间距紧凑
+- RAG 问答：基于论文原文的检索增强生成，支持跨语言查询、引用溯源
 - 结果管理：历史记录、已保存报告、删除功能
-- AI 对话工具：内置常用提问下拉，可一键插入论文高频问题模板（如相关论文对比、创新点、复现清单）
-- 导出能力：Markdown / PDF 报告导出（空行与段落格式已统一）
-- 七问导出格式：每题按「问题 + 回答」成对展示
+- AI 对话工具：内置常用提问下拉，可一键插入论文高频问题模板
+- 导出能力：Markdown / PDF 报告导出
 - 诊断信息：运行日志 + trace 记录
 
 ### 内容要求阈值（当前）
@@ -123,34 +124,55 @@ A：当前版本已在 PDF 导出前做字符规范化（清理异常替代字�
 
 ### 版本与路线图
 - `v0.1`（已完成）
-- 完整主流程：`ingest -> analyze -> review -> finalize -> report`
-- 七问结构化输出与阈值校验
-- 历史记录/保存报告管理（含删除）
-- finalize 可观测性（耗时、repair、重试）与 trace 回放
-- 标题提取增强（含 arXiv API 兜底）和复现指导空内容修复
+  - 完整主流程：`ingest -> analyze -> review -> finalize -> report`
+  - 七问结构化输出与阈值校验
+  - 历史记录/保存报告管理（含删除）
+  - finalize 可观测性（耗时、repair、重试）与 trace 回放
+  - 标题提取增强（含 arXiv API 兜底）和复现指导空内容修复
 
-- `v0.2`（计划中）
-- 阶段级性能优化（降低 finalize 尾段时延）
-- 失败可恢复执行（按阶段断点续跑）
-- 更细粒度质量评分和告警
-- 更完整的前端运行态可观测面板
+- `v0.2`（进行中）
+  - RAG 检索增强问答，支持跨语言查询
+  - Pipeline 服务化（async 架构，analyze.py 从 634 行瘦身到 170 行）
+  - ModelRouter 异步方法（httpx 非阻塞 HTTP）
+  - 全局异常处理加固，不再向客户端泄漏内部异常
+  - SQLite 连接池、PDF 按页提取、LangSmith 追踪集成
+
+- `v0.3`（计划中）
+  - 失败可恢复执行（按阶段断点续跑）
+  - 更细粒度质量评分和告警
+  - 前端组件化拆分（ResultsView 解耦）
+  - RAG 语义检索（向量数据库集成）
 
 Release Note：见 `docs/releases/v0.1.0.md`
 
 ### 安全声明
 - API Key 不会提交到仓库：`.env`、`.env.*`、`*.env.local` 已在 `.gitignore` 中忽略。
 - 支持 `gitleaks` 历史扫描；当前仓库历史扫描结果为 `0` 命中（无疑似密钥泄露）。
+- CORS 白名单：`APC_ALLOWED_ORIGINS` 必须显式配置，不允许通配符 `*`。
+- 全局异常处理：500 响应不包含原始异常信息，详细堆栈仅写入服务端日志。
 - 可选开启后端鉴权：`APC_REQUIRE_API_KEY=1` + `APC_API_KEY`，请求头使用 `x-api-key`。
 
 ### 项目结构
 ```text
 ai-paper-coach/
-|- apps/web/          # Vue 3 + Vite 前端
-|- services/api/      # FastAPI 后端
-|- data/              # 本地数据（报告/历史/缓存）
-|- caogao/            # README 截图素材
-|- docs/
-|- run.py             # 一键启动前后端
+|- apps/web/                  # Vue 3 + Vite 前端
+|  |- src/views/              # 页面组件（ResultsView, TaskView 等）
+|  |- src/composables/        # 组合式函数（useTraceHistory 等）
+|  `- src/lib/                # 工具库（API 调用、本地存储）
+|- services/api/              # FastAPI 后端
+|  |- app/core/
+|  |  |- model_router.py      # 模型调用路由（同步 + 异步双轨）
+|  |  |- orchestrator.py      # 分析/审阅/整理编排
+|  |  |- pipeline.py          # Pipeline 任务管理（async）
+|  |  |- rag.py               # RAG 检索增强生成
+|  |  |- tracing.py           # LangSmith 追踪集成
+|  |  |- storage.py           # SQLite 存储（连接池）
+|  |  `- parser.py            # PDF 解析（按页提取）
+|  |- app/routers/            # HTTP 端点
+|  `- tests/                  # pytest 测试
+|- services/data/             # 运行时数据（DB、上传、缓存）
+|- caogao/                    # README 截图素材
+|- run.py                     # 一键启动前后端
 `- README.md
 ```
 
@@ -204,18 +226,21 @@ npm run dev -- --host 127.0.0.1 --port 5500
 ```
 
 ### 主要 API
-- `GET /health`（API 连通性检查）
-- `POST /validate-models`（模型接口校验）
-- `POST /ingest`
-- `POST /analyze`
-- `POST /review`
-- `POST /finalize`
-- `GET /report/{paper_id}`
-- `GET /export/{paper_id}.md`
-- `GET /export/{paper_id}.pdf`
-- `GET /trace/{paper_id}`
-- `GET /history` / `DELETE /history/{record_id}`
-- `GET /saved` / `DELETE /saved/{record_id}`
+- `GET /health` — API 连通性检查
+- `POST /validate-models` — 模型接口校验
+- `POST /ingest` — 论文导入（URL / PDF 上传）
+- `POST /analyze` — 结构化分析
+- `POST /review` — 审阅
+- `POST /finalize` — 整理定稿
+- `POST /pipeline/start` — 启动全自动流水线（异步，SSE 进度）
+- `GET /pipeline/jobs/{job_id}/events` — 流水线 SSE 事件流
+- `POST /rag/query` — RAG 检索问答
+- `GET /report/{paper_id}` — 获取报告
+- `GET /export/{paper_id}.md` — 导出 Markdown
+- `GET /export/{paper_id}.pdf` — 导出 PDF
+- `GET /trace/{paper_id}` — 获取 trace 记录
+- `GET /history` / `DELETE /history/{record_id}` — 历史管理
+- `GET /saved` / `DELETE /saved/{record_id}` — 已保存报告管理
 
 
 ### 统一响应结构
@@ -267,12 +292,12 @@ You can ingest a paper from URL/PDF, generate structured reports, and continue w
 ### Highlights
 - End-to-end pipeline: `ingest -> analyze -> review -> finalize -> report`
 - Structured 7-question reading framework
+- RAG Q&A: retrieval-augmented generation over paper text, with cross-lingual query support
 - AI chat quick prompts: built-in dropdown with common paper questions for one-click insertion
-- Export formatting is normalized for cleaner paragraph spacing
-- 7-question export now renders as explicit `Question + Answer` blocks
 - Side-by-side report + original PDF reading
 - History and saved reports with deletion support
-- One-click API connectivity check (`/health`)
+- Async pipeline architecture with SSE progress streaming
+- LangSmith tracing integration for observability
 
 ### Content Thresholds (Current)
 - Summary (`three_minute_summary.problem`): `>= 800` chars
@@ -293,12 +318,15 @@ When parsing metadata/title fails, a placeholder is used. Current version adds a
 Current version includes fallback merge logic. Re-run `ingest -> analyze -> review -> finalize` and inspect trace if needed.
 
 ### Version & Roadmap
-- `v0.1` done: full pipeline, 7-question outputs, trace observability, title fallback improvements, reproduction-guide empty-content fix.
-- `v0.2` planned: lower finalize latency, resumable stage runs, finer quality signals, richer runtime observability UI.
+- `v0.1` done: full pipeline, 7-question outputs, trace observability, title fallback, reproduction-guide fixes.
+- `v0.2` in progress: RAG with cross-lingual support, async pipeline architecture, ModelRouter async methods, security hardening, SQLite connection pool, LangSmith tracing.
+- `v0.3` planned: resumable stage runs, finer quality scoring, frontend component refactoring, vector-based RAG.
 
 ### Security Statement
 - API keys are not committed: `.env`, `.env.*`, and `*.env.local` are ignored.
-- `gitleaks` history scan is supported; current repository scan reports `0` findings.
+- `gitleaks` history scan reports `0` findings.
+- CORS whitelist is enforced (no wildcard `*` allowed).
+- Global exception handler: 500 responses never expose raw exception details.
 - Optional backend key auth: `APC_REQUIRE_API_KEY=1` and `APC_API_KEY` via `x-api-key` header.
 
 ### Quick Start
@@ -326,16 +354,17 @@ Optional security env vars in `.env`:
 - `APC_API_KEY`: expected value in `x-api-key` header
 
 ### Key APIs
-- `GET /health`
-- `POST /validate-models`
-- `POST /ingest`
-- `POST /analyze`
-- `POST /review`
-- `POST /finalize`
-- `GET /report/{paper_id}`
-- `GET /export/{paper_id}.md`
-- `GET /export/{paper_id}.pdf`
-- `GET /trace/{paper_id}`
+- `GET /health` — connectivity check
+- `POST /validate-models` — model provider validation
+- `POST /ingest` — paper import (URL / PDF upload)
+- `POST /analyze` — structured analysis
+- `POST /review` — review
+- `POST /finalize` — finalize
+- `POST /pipeline/start` — async full pipeline with SSE progress
+- `POST /rag/query` — RAG retrieval Q&A
+- `GET /report/{paper_id}` — get report
+- `GET /export/{paper_id}.md` / `.pdf` — export
+- `GET /trace/{paper_id}` — trace records
 
 
 ### Unified Response Envelope
