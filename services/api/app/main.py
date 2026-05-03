@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
-from app.routers import analyze, chat, export, ingest, records
+from app.routers import analyze, chat, export, ingest, rag, records
 from app.core.storage import init_db, mark_stale_pipeline_jobs
 
 
@@ -70,11 +70,15 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 def _allowed_origins_from_env() -> list[str]:
-    raw = (os.getenv("APC_ALLOWED_ORIGINS", "*") or "*").strip()
+    raw = (os.getenv("APC_ALLOWED_ORIGINS", "") or "").strip()
+    if not raw:
+        raise RuntimeError("APC_ALLOWED_ORIGINS is required and must be an explicit origin list")
     if raw == "*":
-        return ["*"]
+        raise RuntimeError("APC_ALLOWED_ORIGINS cannot be '*' when credentials are enabled")
     origins = [item.strip() for item in raw.split(",") if item.strip()]
-    return origins or ["*"]
+    if not origins or any(origin == "*" for origin in origins):
+        raise RuntimeError("APC_ALLOWED_ORIGINS must not contain wildcard '*'")
+    return origins
 
 
 def create_app() -> FastAPI:
@@ -183,9 +187,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(_: Request, exc: Exception):
+        import logging
+        logging.getLogger("uvicorn.error").exception("Unhandled exception")
         return JSONResponse(
             status_code=500,
-            content=_failure(f"internal server error: {exc}", code=500),
+            content=_failure("internal server error", code=500),
         )
 
     app.include_router(ingest.router)
@@ -193,6 +199,7 @@ def create_app() -> FastAPI:
     app.include_router(export.router)
     app.include_router(records.router)
     app.include_router(chat.router)
+    app.include_router(rag.router)
     return app
 
 

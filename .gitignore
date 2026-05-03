@@ -29,3 +29,20 @@ data/saved/
 
 # Frontend local state caches (if ever exported)
 apps/web/.local/
+
+# Runtime upload files
+services/data/uploads/
+
+# Development tool artifacts
+.playwright-mcp/
+.tmp/
+
+# Debug / temporary files
+tmp_*
+*.tmp
+rag-before-run.md
+rag-ui-devtools*.png
+
+# Test temp directories
+services/api/.pytest_tmp/
+services/api/.pytest_cache/

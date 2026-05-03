@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -15,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from app.core.chunker import split_sections, top_chunks
 from app.core.model_router import ModelRouter
 from app.core.orchestrator import generate_draft, get_requirement_issues, normalize_report, patch_draft, review_draft
-from app.core.history_store import CACHE_ROOT as HISTORY_CACHE_ROOT, list_history_records, load_history_record, save_history_record
+from app.core.history_store import CACHE_ROOT as HISTORY_CACHE_ROOT, save_history_record
 from app.core.parser import parse_pdf_file, parse_url
 from app.core.schemas import AnalyzeRequest, FinalizeRequest, PipelineStartRequest, ReviewRequest, ValidateModelsRequest
 from app.core.storage import (
@@ -42,7 +43,7 @@ CACHE_ROOT = Path(HISTORY_CACHE_ROOT)
 CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 PIPELINE_JOBS: dict[str, dict[str, Any]] = {}
-PIPELINE_JOBS_LOCK = threading.Lock()
+PIPELINE_JOBS_LOCK = threading.RLock()
 PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline-job")
 
 
@@ -64,19 +65,20 @@ def _new_job_payload(*, job_id: str, paper_id: str, mode: str, strict: bool) -> 
 
 
 def _append_job_event(job: dict[str, Any], *, event_type: str, stage: str | None = None, message: str | None = None, data: Any = None) -> None:
-    event = {
-        "id": job["next_event_id"],
-        "type": event_type,
-        "stage": stage,
-        "message": message,
-        "data": data,
-        "ts": now_iso(),
-    }
-    job["next_event_id"] += 1
-    job["events"].append(event)
-    if len(job["events"]) > 500:
-        job["events"] = job["events"][-500:]
-    job["updated_at"] = now_iso()
+    with PIPELINE_JOBS_LOCK:
+        event = {
+            "id": job["next_event_id"],
+            "type": event_type,
+            "stage": stage,
+            "message": message,
+            "data": data,
+            "ts": now_iso(),
+        }
+        job["next_event_id"] += 1
+        job["events"].append(event)
+        if len(job["events"]) > 500:
+            job["events"] = job["events"][-500:]
+        job["updated_at"] = now_iso()
 
 
 def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
@@ -112,7 +114,7 @@ def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
     try:
         with PIPELINE_JOBS_LOCK:
             job["current_stage"] = "analyze"
-            _append_job_event(job, event_type="stage_started", stage="analyze", message="\u5f00\u59cb\u6267\u884c\u5206\u6790\u9636\u6bb5")
+            _append_job_event(job, event_type="stage_started", stage="analyze", message="开始执行分析阶段")
             _persist_job(job)
 
         analyze_result = analyze(AnalyzeRequest(paper_id=req.paper_id, mode=req.mode, model_config=req.llm_config))
@@ -124,7 +126,7 @@ def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
         if req.mode != "fast":
             with PIPELINE_JOBS_LOCK:
                 job["current_stage"] = "review"
-                _append_job_event(job, event_type="stage_started", stage="review", message="\u5f00\u59cb\u6267\u884c\u5ba1\u9605\u9636\u6bb5")
+                _append_job_event(job, event_type="stage_started", stage="review", message="开始执行审阅阶段")
                 _persist_job(job)
 
             review_result = review(ReviewRequest(paper_id=req.paper_id, model_config=req.llm_config))
@@ -135,7 +137,7 @@ def _run_pipeline_job(job_id: str, req: PipelineStartRequest) -> None:
 
             with PIPELINE_JOBS_LOCK:
                 job["current_stage"] = "finalize"
-                _append_job_event(job, event_type="stage_started", stage="finalize", message="\u5f00\u59cb\u6267\u884c\u6574\u7406\u9636\u6bb5")
+                _append_job_event(job, event_type="stage_started", stage="finalize", message="开始执行整理阶段")
                 _persist_job(job)
 
             finalize_result = finalize(FinalizeRequest(paper_id=req.paper_id, strict=req.strict or req.mode == "strict", model_config=req.llm_config))
@@ -268,16 +270,11 @@ def _is_placeholder_title(value: Any) -> bool:
         "-",
     }:
         return True
-    # Common placeholder titles generated in Chinese fallback flows.
-    if title_raw.startswith("论文中未明确说明"):
-        return True
-    if "未明确说明" in title_raw and len(title_raw) <= 24:
+    if re.match(r"^论文中未明确说明(?:篇|章节)?(?:\s*[（(].*[）)])?\s*$", title_raw):
         return True
     if "not explicitly stated" in normalized:
         return True
     return False
-
-
 
 def _maybe_backfill_paper_title(paper_id: str, report: dict[str, Any] | None, paper: dict[str, Any] | None) -> None:
     report_title = ((report or {}).get("paper_meta") or {}).get("title")
@@ -557,20 +554,6 @@ def trace(paper_id: str):
         "traces": get_llm_traces(run["id"]),
     }
 
-@router.get("/history")
-def history_list():
-    return {
-        "items": list_history_records(),
-    }
-
-
-@router.get("/history/{record_id}")
-def history_detail(record_id: str):
-    record = load_history_record(record_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="history record not found")
-    return record
-
 @router.post("/pipeline/start")
 def pipeline_start(req: PipelineStartRequest):
     paper = get_paper(req.paper_id)
@@ -581,7 +564,7 @@ def pipeline_start(req: PipelineStartRequest):
     job = _new_job_payload(job_id=job_id, paper_id=req.paper_id, mode=req.mode, strict=req.strict)
     with PIPELINE_JOBS_LOCK:
         PIPELINE_JOBS[job_id] = job
-        _append_job_event(job, event_type="queued", stage="pending", message="\u4efb\u52a1\u5df2\u5165\u961f\uff0c\u7b49\u5f85\u540e\u53f0\u6267\u884c")
+        _append_job_event(job, event_type="queued", stage="pending", message="任务已入队，等待后台执行")
 
     PIPELINE_EXECUTOR.submit(_run_pipeline_job, job_id, req)
     return {
@@ -602,7 +585,8 @@ def pipeline_job_status(job_id: str):
             raise HTTPException(status_code=404, detail="pipeline job not found")
         with PIPELINE_JOBS_LOCK:
             PIPELINE_JOBS[job_id] = job
-    return _job_snapshot(job)
+    with PIPELINE_JOBS_LOCK:
+        return _job_snapshot(job)
 
 
 @router.get("/pipeline/jobs/{job_id}/events")
@@ -622,8 +606,9 @@ def pipeline_job_events(job_id: str):
                 with PIPELINE_JOBS_LOCK:
                     PIPELINE_JOBS[job_id] = job
 
-            events = list(job["events"])
-            status = job["status"]
+            with PIPELINE_JOBS_LOCK:
+                events = list(job.get("events", []))
+                status = str(job.get("status", "running"))
 
             while cursor < len(events):
                 payload = events[cursor]
@@ -645,3 +630,4 @@ def pipeline_job_events(job_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
