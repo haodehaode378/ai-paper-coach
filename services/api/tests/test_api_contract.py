@@ -109,3 +109,80 @@ def test_export_pdf_returns_binary_pdf(client: TestClient, monkeypatch):
     assert resp.status_code == 200
     assert resp.headers.get("content-type", "").startswith("application/pdf")
     assert resp.content.startswith(b"%PDF")
+
+
+def test_rag_query_returns_citations_and_debug(client: TestClient, tmp_path):
+    from reportlab.pdfgen import canvas
+
+    pdf_path = tmp_path / "rag-demo.pdf"
+    c = canvas.Canvas(str(pdf_path))
+    c.drawString(72, 720, "Transformer attention uses query key value vectors for sequence modeling.")
+    c.drawString(72, 700, "Ablation results show attention improves translation quality.")
+    c.showPage()
+    c.save()
+
+    paper = create_paper(
+        source_type="upload",
+        source_name="rag-demo.pdf",
+        local_pdf_path=str(pdf_path),
+        title="RAG Demo",
+    )
+
+    resp = client.post(
+        "/rag/query",
+        json={
+            "paper_id": paper["id"],
+            "question": "What improves translation quality?",
+            "top_k": 3,
+            "chunk_size": 400,
+            "chunk_overlap": 40,
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    _assert_envelope(payload)
+    data = payload["data"]
+    assert data["answer"]
+    assert "根据当前检索到的原文片段" in data["answer"]
+    assert data["answer_mode"] == "fallback"
+    assert data["citations"]
+    assert data["debug"]["chunk_count"] >= 1
+    assert data["debug"]["matched_chunk_count"] >= 1
+    assert data["debug"]["query_token_count"] >= 1
+    assert data["debug"]["generation"] == {"requested": False, "used": False, "reason": "disabled"}
+    assert data["debug"]["top_chunks"][0]["page_start"] == 1
+
+
+def test_rag_query_reports_no_hits_without_mojibake(client: TestClient, tmp_path):
+    from reportlab.pdfgen import canvas
+
+    pdf_path = tmp_path / "rag-no-hit.pdf"
+    c = canvas.Canvas(str(pdf_path))
+    c.drawString(72, 720, "Transformer attention uses query key value vectors for sequence modeling.")
+    c.showPage()
+    c.save()
+
+    paper = create_paper(
+        source_type="upload",
+        source_name="rag-no-hit.pdf",
+        local_pdf_path=str(pdf_path),
+        title="RAG No Hit",
+    )
+
+    resp = client.post(
+        "/rag/query",
+        json={
+            "paper_id": paper["id"],
+            "question": "unrelatedbiologyterm",
+            "top_k": 3,
+            "chunk_size": 400,
+            "chunk_overlap": 40,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["answer"] == "资料中没有检索到足够相关的片段，当前问题建议人工核查原文后再回答。"
+    assert "璧勬枡" not in data["answer"]
+    assert data["citations"] == []
+    assert data["debug"]["matched_chunk_count"] == 0
+    assert data["debug"]["generation"] == {"requested": False, "used": False, "reason": "no_hits"}

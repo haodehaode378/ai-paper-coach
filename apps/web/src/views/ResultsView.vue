@@ -23,7 +23,7 @@ const CHAT_OPEN_KEY = 'apc_report_chat_open_v1'
 const CHAT_LANG_KEY = 'apc_report_chat_lang_v1'
 const CHAT_SLOT_KEY = 'apc_report_chat_slot_v1'
 const CHAT_HISTORY_STORE_KEY = 'apc_report_chat_history_v1'
-const CHAT_HISTORY_MAX_MESSAGES = 120
+const CHAT_HISTORY_MAX_MESSAGES = Number(import.meta.env.VITE_CHAT_HISTORY_MAX_MESSAGES || 120)
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 const md = new MarkdownIt({
@@ -81,6 +81,14 @@ const chatWidth = ref(Number(localStorage.getItem(CHAT_WIDTH_KEY) || 460))
 const chatListRef = ref(null)
 const chatMessages = ref([])
 const chatHistoryScope = ref('')
+const ragQuestion = ref('')
+const ragLoading = ref(false)
+const ragError = ref('')
+const ragResult = ref(null)
+const ragTopK = ref(5)
+const ragChunkSize = ref(900)
+const ragChunkOverlap = ref(120)
+const ragUseLlm = ref(false)
 const quickPromptOptions = [
   {
     label: '有没有相关论文可对比？',
@@ -803,6 +811,39 @@ async function sendChat() {
   }
 }
 
+async function runRagQuery() {
+  const question = ragQuestion.value.trim()
+  if (!question || ragLoading.value || !paperId.value) return
+
+  ragLoading.value = true
+  ragError.value = ''
+  ragResult.value = null
+  try {
+    const formState = loadModelConfig()
+    ragResult.value = await callApi(apiBase.value, '/rag/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        paper_id: paperId.value,
+        question,
+        top_k: Number(ragTopK.value) || 5,
+        chunk_size: Number(ragChunkSize.value) || 900,
+        chunk_overlap: Number(ragChunkOverlap.value) || 120,
+        use_llm: Boolean(ragUseLlm.value),
+        model_slot: chatModelSlot.value,
+        report: report.value,
+        model_config: buildModelConfig(formState),
+      }),
+    }, 240000)
+    addStatus(`RAG 检索完成：Top-K=${ragResult.value?.debug?.top_chunks?.length || 0}`)
+  } catch (error) {
+    ragError.value = error?.message || 'RAG 查询失败'
+    addStatus(`RAG 查询失败：${ragError.value}`)
+  } finally {
+    ragLoading.value = false
+  }
+}
+
 async function loadHistoryRecords() {
   try {
     const base = apiBase.value || context.value?.api_base || 'http://localhost:8000'
@@ -853,6 +894,9 @@ async function loadReport() {
   pdfPageCount.value = 0
   pdfError.value = ''
   loadedPdfKey.value = ''
+  ragQuestion.value = ''
+  ragError.value = ''
+  ragResult.value = null
 
   if (!context.value?.api_base) {
     addStatus('没有可用的接口地址，请先回到控制台运行一次任务。')
@@ -974,7 +1018,11 @@ watch(pdfPage, async () => {
       </aside>
 
       <main class="workspace-main workspace-main-span-two">
-        <div class="result-split-shell">
+        <div
+          class="result-split-shell"
+          :class="{ 'result-split-shell-chat-open': chatOpen }"
+          :style="chatOpen ? { '--result-chat-offset': `${chatWidth + 42}px` } : null"
+        >
           <section class="result-report-pane">
             <section class="hero-panel panel-soft hero-panel-single">
               <div>
@@ -1005,6 +1053,7 @@ watch(pdfPage, async () => {
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'summary' }" @click="activeTab = 'summary'">摘要</button>
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'reproduction' }" @click="activeTab = 'reproduction'">复现指导</button>
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'qa' }" @click="activeTab = 'qa'">七问回答</button>
+                  <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'rag' }" @click="activeTab = 'rag'">RAG 调试</button>
                   <button class="reader-tab" :class="{ 'reader-tab-active': activeTab === 'paper' }" @click="activeTab = 'paper'">论文原文</button>
                 </div>
               </div>
@@ -1063,6 +1112,88 @@ watch(pdfPage, async () => {
                   </article>
                 </section>
  
+                <section v-if="activeTab === 'rag'" class="report-section report-section-compact rag-debug-section">
+                  <div class="section-row">
+                    <div>
+                      <h3>RAG 检索调试台</h3>
+                      <p class="panel-subtitle">展示本次问题召回的 Top-K chunk、页码、分数和进入回答的原文依据。</p>
+                    </div>
+                    <span class="sidebar-meta" v-if="ragResult">耗时 {{ ragResult.debug?.latency_ms || 0 }} ms</span>
+                  </div>
+
+                  <div class="rag-query-box">
+                    <textarea v-model="ragQuestion" class="chat-textarea" rows="3" placeholder="输入一个基于论文原文的问题..." @keydown.ctrl.enter.prevent="runRagQuery" />
+                    <div class="rag-param-grid">
+                      <label class="chat-context-toggle">
+                        <span>Top-K</span>
+                        <input v-model.number="ragTopK" class="rag-number-input" type="number" min="1" max="12" />
+                      </label>
+                      <label class="chat-context-toggle">
+                        <span>chunk_size</span>
+                        <input v-model.number="ragChunkSize" class="rag-number-input" type="number" min="200" max="2400" step="100" />
+                      </label>
+                      <label class="chat-context-toggle">
+                        <span>overlap</span>
+                        <input v-model.number="ragChunkOverlap" class="rag-number-input" type="number" min="0" max="600" step="20" />
+                      </label>
+                      <label class="chat-context-toggle">
+                        <input v-model="ragUseLlm" type="checkbox" />
+                        <span>使用模型生成</span>
+                      </label>
+                    </div>
+                    <div class="chat-input-actions">
+                      <span class="sidebar-meta">{{ ragLoading ? '正在检索...' : 'Ctrl + Enter 查询' }}</span>
+                      <button class="button button-primary" :disabled="ragLoading || !paperId || !ragQuestion.trim()" @click="runRagQuery">运行 RAG 查询</button>
+                    </div>
+                  </div>
+
+                  <p v-if="ragError" class="error-text">{{ ragError }}</p>
+                  <p v-else-if="!ragResult" class="empty-state">运行一次查询后，会在这里显示回答、引用和检索链路。</p>
+                  <div v-else class="rag-result-grid">
+                    <article class="rag-answer-card">
+                      <div class="section-row">
+                        <h3>回答</h3>
+                        <span class="sidebar-meta">模式：{{ ragResult.answer_mode }}</span>
+                      </div>
+                      <pre>{{ ragResult.answer }}</pre>
+                    </article>
+
+                    <article class="rag-answer-card">
+                      <div class="section-row">
+                        <h3>检索参数</h3>
+                        <span class="sidebar-meta">chunks={{ ragResult.debug?.chunk_count || 0 }}</span>
+                      </div>
+                      <div class="checks-grid">
+                        <div class="check-card">
+                          <strong>chunk_size</strong>
+                          <p>{{ ragResult.debug?.params?.chunk_size }}</p>
+                        </div>
+                        <div class="check-card">
+                          <strong>overlap</strong>
+                          <p>{{ ragResult.debug?.params?.chunk_overlap }}</p>
+                        </div>
+                        <div class="check-card">
+                          <strong>top_k</strong>
+                          <p>{{ ragResult.debug?.params?.top_k }}</p>
+                        </div>
+                      </div>
+                    </article>
+
+                    <article class="rag-answer-card rag-topk-card">
+                      <h3>Top-K Chunks</h3>
+                      <div class="rag-chunk-list">
+                        <details v-for="item in ragResult.debug?.top_chunks || []" :key="item.chunk_id" class="trace-item rag-chunk-item" open>
+                          <summary>
+                            <span>{{ item.label }}</span>
+                            <span class="sidebar-meta">score={{ item.score }}</span>
+                          </summary>
+                          <pre>{{ item.content }}</pre>
+                        </details>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+
                 <section v-if="activeTab === 'paper'" class="report-section report-section-compact paper-preview-section">
                   <div class="section-row">
                     <h3>论文原文</h3>

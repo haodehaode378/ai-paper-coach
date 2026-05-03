@@ -10,7 +10,38 @@ from typing import Any
 
 import requests
 
+from app.core.tracing import traceable_if_enabled
+
 logger = logging.getLogger(__name__)
+
+
+def _clip_trace_text(value: Any, limit: int = 1200) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _trace_chat_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "base_url": inputs.get("base"),
+        "has_api_key": bool(inputs.get("key")),
+        "model": inputs.get("model"),
+        "timeout_sec": inputs.get("timeout_sec"),
+        "temperature": inputs.get("temperature"),
+        "system_preview": _clip_trace_text(inputs.get("system"), 1200),
+        "user_preview": _clip_trace_text(inputs.get("user"), 2000),
+    }
+
+
+def _trace_chat_outputs(output: Any) -> dict[str, Any]:
+    if not isinstance(output, tuple) or len(output) < 2:
+        return {"output_type": type(output).__name__}
+    content, meta = output
+    return {
+        "response_preview": _clip_trace_text(content, 2000),
+        "meta": meta if isinstance(meta, dict) else None,
+    }
 
 
 class ModelRouter:
@@ -154,6 +185,12 @@ class ModelRouter:
             "timeout_sec": p.get("timeout_sec") or 0,
         }
 
+    @traceable_if_enabled(
+        name="model_router.chat_completion",
+        run_type="llm",
+        process_inputs=_trace_chat_inputs,
+        process_outputs=_trace_chat_outputs,
+    )
     def _chat(
         self,
         *,

@@ -1,9 +1,18 @@
 ﻿from __future__ import annotations
 
 import os
+from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover
+    try:
+        from PyPDF2 import PdfReader  # type: ignore[assignment]
+    except Exception:  # pragma: no cover
+        PdfReader = None
 
 from app.core.storage import create_paper
 from app.core.parser import infer_title_from_source
@@ -54,6 +63,16 @@ async def ingest(request: Request, file: UploadFile | None = File(default=None),
                 status_code=413,
                 detail=f"Uploaded file too large (limit={max_bytes // (1024 * 1024)}MB)",
             )
+        if not data.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF (invalid header)")
+        if PdfReader is None:
+            raise HTTPException(status_code=500, detail="PDF dependency missing: install pypdf or PyPDF2")
+        try:
+            reader = PdfReader(BytesIO(data))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Uploaded file is not a readable PDF: {exc}") from exc
+        if reader.is_encrypted:
+            raise HTTPException(status_code=400, detail="Encrypted PDF is not supported")
         save_path.write_bytes(data)
 
         # Update paper with local path by recreating entry not needed; use source_name + path via create_paper API now.

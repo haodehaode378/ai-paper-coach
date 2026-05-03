@@ -119,11 +119,26 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     return "\n\n".join(pages).strip()
 
 
+def extract_pdf_pages(pdf_bytes: bytes) -> list[dict[str, Any]]:
+    if PdfReader is None:
+        return []
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    pages: list[dict[str, Any]] = []
+    for idx, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception:
+            text = ""
+        pages.append({"page": idx, "text": text.strip()})
+    return pages
+
+
 def parse_pdf_file(path: str) -> dict[str, Any]:
     data = Path(path).read_bytes()
-    text = _extract_pdf_text(data)
+    pages = extract_pdf_pages(data)
+    text = "\n\n".join(str(item.get("text") or "") for item in pages).strip()
     status = "success" if text else "failed"
-    return {"text": text, "status": status, "source": path, "pdf_backend": PDF_BACKEND}
+    return {"text": text, "pages": pages, "status": status, "source": path, "pdf_backend": PDF_BACKEND}
 
 
 def _arxiv_abs(url: str) -> str:
@@ -153,8 +168,10 @@ def parse_url(url: str, download_to: str | None = None) -> dict[str, Any]:
         if download_to:
             Path(download_to).write_bytes(pdf_bytes)
         text = _extract_pdf_text(pdf_bytes)
+        pages = extract_pdf_pages(pdf_bytes)
         return {
             "text": text,
+            "pages": pages,
             "status": "success" if text else "failed",
             "source": url,
             "pdf_backend": PDF_BACKEND,
@@ -171,7 +188,13 @@ def parse_url(url: str, download_to: str | None = None) -> dict[str, Any]:
                     Path(download_to).write_bytes(pdf_bytes)
                 text = _extract_pdf_text(pdf_bytes)
                 if text:
-                    return {"text": text, "status": "success", "source": pdf_url, "pdf_backend": PDF_BACKEND}
+                    return {
+                        "text": text,
+                        "pages": extract_pdf_pages(pdf_bytes),
+                        "status": "success",
+                        "source": pdf_url,
+                        "pdf_backend": PDF_BACKEND,
+                    }
             except Exception:
                 pass
 

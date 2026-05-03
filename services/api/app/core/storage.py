@@ -1,12 +1,19 @@
 ﻿import json
+import os
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, Full, LifoQueue
 from typing import Any
 
 DB_PATH = Path(__file__).resolve().parents[3] / "data" / "app.db"
+_POOL_MAX = max(1, int((os.getenv("APC_SQLITE_POOL_SIZE", "8") or "8").strip()))
+_POOL: LifoQueue[sqlite3.Connection] = LifoQueue(maxsize=_POOL_MAX)
+_POOL_CREATED = 0
+_POOL_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -15,20 +22,48 @@ def now_iso() -> str:
 
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+
+def _acquire_conn() -> tuple[sqlite3.Connection, bool]:
+    global _POOL_CREATED
+    try:
+        return _POOL.get_nowait(), True
+    except Empty:
+        pass
+
+    with _POOL_LOCK:
+        if _POOL_CREATED < _POOL_MAX:
+            _POOL_CREATED += 1
+            return _conn(), True
+
+    try:
+        return _POOL.get(timeout=1.0), True
+    except Empty:
+        # Fallback temporary connection if pool is saturated.
+        return _conn(), False
+
+
+def _release_conn(conn: sqlite3.Connection, pooled: bool) -> None:
+    if not pooled:
+        conn.close()
+        return
+    try:
+        _POOL.put_nowait(conn)
+    except Full:
+        conn.close()
+
 @contextmanager
 def get_conn():
-    conn = _conn()
+    conn, pooled = _acquire_conn()
     try:
         yield conn
         conn.commit()
     finally:
-        conn.close()
-
+        _release_conn(conn, pooled)
 
 def init_db() -> None:
     with get_conn() as conn:
@@ -87,6 +122,22 @@ def init_db() -> None:
                 FOREIGN KEY(run_id) REFERENCES runs(id)
             );
 
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id TEXT PRIMARY KEY,
+                paper_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                page_start INTEGER,
+                page_end INTEGER,
+                section TEXT,
+                content TEXT NOT NULL,
+                token_json TEXT NOT NULL,
+                chunk_size INTEGER NOT NULL,
+                chunk_overlap INTEGER NOT NULL,
+                strategy TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(paper_id) REFERENCES papers(id)
+            );
+
 
             CREATE TABLE IF NOT EXISTS pipeline_jobs (
                 job_id TEXT PRIMARY KEY,
@@ -105,6 +156,8 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_created_at ON pipeline_jobs(created_at DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_document_chunks_paper_params
+                ON document_chunks(paper_id, chunk_size, chunk_overlap, strategy);
             CREATE INDEX IF NOT EXISTS idx_runs_paper_id ON runs(paper_id, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_llm_traces_run_id ON llm_traces(run_id, created_at ASC);
             """
@@ -196,6 +249,71 @@ def get_latest_parse(paper_id: str) -> dict[str, Any] | None:
     data = dict(row)
     data["section_index"] = json.loads(data["section_index_json"])
     return data
+
+
+def replace_document_chunks(
+    paper_id: str,
+    chunks: list[dict[str, Any]],
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: str,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM document_chunks WHERE paper_id = ? AND chunk_size = ? AND chunk_overlap = ? AND strategy = ?",
+            (paper_id, int(chunk_size), int(chunk_overlap), strategy),
+        )
+        for idx, item in enumerate(chunks):
+            conn.execute(
+                """
+                INSERT INTO document_chunks (
+                    id, paper_id, chunk_index, page_start, page_end, section,
+                    content, token_json, chunk_size, chunk_overlap, strategy, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(item.get("id") or uuid.uuid4()),
+                    paper_id,
+                    int(item.get("chunk_index", idx)),
+                    item.get("page_start"),
+                    item.get("page_end"),
+                    item.get("section") or "",
+                    str(item.get("content") or ""),
+                    json.dumps(item.get("tokens") or [], ensure_ascii=False),
+                    int(chunk_size),
+                    int(chunk_overlap),
+                    strategy,
+                    now_iso(),
+                ),
+            )
+
+
+def get_document_chunks(
+    paper_id: str,
+    *,
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: str,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM document_chunks
+            WHERE paper_id = ? AND chunk_size = ? AND chunk_overlap = ? AND strategy = ?
+            ORDER BY chunk_index ASC
+            """,
+            (paper_id, int(chunk_size), int(chunk_overlap), strategy),
+        ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["tokens"] = json.loads(item.get("token_json") or "[]")
+        except Exception:
+            item["tokens"] = []
+        items.append(item)
+    return items
 
 
 def save_draft(run_id: str, draft: dict[str, Any]) -> None:

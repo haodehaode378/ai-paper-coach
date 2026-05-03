@@ -15,7 +15,7 @@ import {
 import { useTraceHistory } from '../composables/useTraceHistory'
 
 const JOB_POLL_INTERVAL_MS = 1500
-const JOB_POLL_TIMEOUT_MS = 1800000
+const JOB_POLL_TIMEOUT_MS = Number(import.meta.env.VITE_JOB_POLL_TIMEOUT_MS || 1800000)
 const STAGE_DEFAULT_MS = {
   analyze: 180000,
   review: 240000,

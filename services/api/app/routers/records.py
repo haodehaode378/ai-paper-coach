@@ -20,6 +20,16 @@ from app.core.history_store import (
 router = APIRouter(tags=["records"])
 
 
+def _resolve_in_base(path: Path, *, base: Path) -> Path | None:
+    try:
+        base_resolved = base.resolve()
+        path_resolved = path.resolve()
+        path_resolved.relative_to(base_resolved)
+    except Exception:
+        return None
+    return path_resolved
+
+
 @router.get("/history")
 def history_list():
     return {"items": list_history_records()}
@@ -96,23 +106,31 @@ def paper_pdf(paper_id: str):
     legacy_upload_root = legacy_data_root / "uploads"
     legacy_cache_root = legacy_data_root / "cache"
 
+    upload_roots = (current_upload_root, legacy_upload_root)
+
     if local_path:
         path_obj = Path(local_path)
         if path_obj.exists() and path_obj.is_file():
-            candidate = path_obj
+            for root in upload_roots:
+                safe_path = _resolve_in_base(path_obj, base=root)
+                if safe_path is not None and safe_path.is_file():
+                    candidate = safe_path
+                    break
         else:
             filename = path_obj.name
-            for root in (current_upload_root, legacy_upload_root):
+            for root in upload_roots:
                 fallback = root / filename
-                if fallback.exists() and fallback.is_file():
-                    candidate = fallback
+                safe_fallback = _resolve_in_base(fallback, base=root)
+                if safe_fallback is not None and safe_fallback.exists() and safe_fallback.is_file():
+                    candidate = safe_fallback
                     break
 
     if candidate is None:
         for root in (current_cache_root, legacy_cache_root):
             cache_path = root / f"{paper_id}.pdf"
-            if cache_path.exists() and cache_path.is_file():
-                candidate = cache_path
+            safe_cache_path = _resolve_in_base(cache_path, base=root)
+            if safe_cache_path is not None and safe_cache_path.exists() and safe_cache_path.is_file():
+                candidate = safe_cache_path
                 break
 
     if candidate is None:

@@ -65,6 +65,7 @@ def main() -> int:
     npm_cmd = _preflight()
     python_exe = _python_exe()
     reload_enabled = _truthy_env("APC_RELOAD", "1")
+    os.environ.setdefault("APC_ALLOWED_ORIGINS", f"http://127.0.0.1:{WEB_PORT},http://localhost:{WEB_PORT}")
 
     api_cmd = [
         python_exe,

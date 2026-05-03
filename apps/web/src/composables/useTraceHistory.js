@@ -3,6 +3,8 @@ import { onUnmounted, ref, watch } from 'vue'
 import { callApi } from '../lib/api'
 import { loadTraceHistory, saveTraceHistory } from '../lib/storage'
 
+const MAX_TRACES = 500
+
 function traceItemKey(item, fallbackIndex = 0) {
   if (item?.id) return String(item.id)
   const phase = item?.phase || '-'
@@ -36,9 +38,10 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
 
   function hydrateTraceState(paperId) {
     const history = loadTraceHistory(paperId)
-    traces.value = history
-    traceSeen = new Set(history.map((item, index) => traceItemKey(item, index)))
-    lastTraceCount = history.length
+    const trimmed = Array.isArray(history) ? history.slice(-MAX_TRACES) : []
+    traces.value = trimmed
+    traceSeen = new Set(trimmed.map((item, index) => traceItemKey(item, index)))
+    lastTraceCount = trimmed.length
   }
 
   async function fetchTraces() {
@@ -69,6 +72,10 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
         if (!traceSeen.has(key)) {
           traceSeen.add(key)
           traces.value.push(item)
+          if (traces.value.length > MAX_TRACES) {
+            traces.value = traces.value.slice(-MAX_TRACES)
+            traceSeen = new Set(traces.value.map((entry, idx) => traceItemKey(entry, idx)))
+          }
           changed = true
         }
       }
@@ -133,6 +140,7 @@ export function useTraceHistory({ paperIdRef, apiBaseRef, addStatus }) {
 
   onUnmounted(() => {
     stopPolling()
+    resetState()
   })
 
   return {

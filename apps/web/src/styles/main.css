@@ -741,6 +741,11 @@ button {
 .result-split-shell {
   display: block;
   min-width: 0;
+  box-sizing: border-box;
+}
+
+.result-split-shell-chat-open {
+  padding-right: var(--result-chat-offset, 502px);
 }
 
 .result-report-pane {
@@ -988,6 +993,7 @@ button {
     display: grid;
     grid-template-columns: 1fr;
     gap: 14px;
+    padding-right: 0;
   }
 
   .result-chat-pane {
@@ -1099,6 +1105,68 @@ button {
 .paper-preview-section {
   display: grid;
   gap: 10px;
+}
+
+.rag-debug-section {
+  display: grid;
+  gap: 14px;
+}
+
+.rag-query-box {
+  display: grid;
+  gap: 10px;
+}
+
+.rag-param-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.rag-number-input {
+  width: 86px;
+  min-height: 28px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text);
+  padding: 0 8px;
+  font: inherit;
+}
+
+.rag-result-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.rag-answer-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.rag-answer-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+.rag-topk-card {
+  min-width: 0;
+}
+
+.rag-chunk-list {
+  display: grid;
+  gap: 10px;
+}
+
+.rag-chunk-item pre {
+  max-height: 260px;
+  overflow: auto;
 }
 
 .paper-preview-frame {
