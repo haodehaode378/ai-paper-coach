@@ -13,6 +13,7 @@ from app.core.storage import get_document_chunks, get_latest_parse, get_paper, r
 from app.core.tracing import traceable_if_enabled
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
+CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]")
 STRATEGY = "page-window-v1"
 
 
@@ -21,6 +22,27 @@ def _clip_text(value: Any, limit: int = 500) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
+
+
+def _is_cjk_query(text: str) -> bool:
+    chars = CJK_RE.findall(text)
+    return len(chars) >= 3 and len(chars) / max(len(text), 1) > 0.3
+
+
+def _translate_query_for_retrieval(question: str, *, model_config: dict[str, Any] | None, model_slot: str) -> str:
+    if not _is_cjk_query(question):
+        return question
+    try:
+        router = ModelRouter(model_config=model_config, trace_phase="rag-translate")
+        translated = router.chat_text(
+            slot=model_slot,
+            system="You translate search queries. Return ONLY the English translation, nothing else. No quotes, no explanation.",
+            user=question,
+        )
+        translated = translated.strip().strip('"').strip("'")
+        return translated if translated and len(translated) > 2 else question
+    except Exception:
+        return question
 
 
 def _summarize_chunk(item: dict[str, Any]) -> dict[str, Any]:
@@ -410,7 +432,7 @@ def generate_grounded_answer(
         return (
             fallback_answer(question, hits),
             "fallback",
-            {"requested": True, "used": False, "slot": model_slot, "reason": "llm_error", "error": str(exc)[:500]},
+            {"requested": True, "used": False, "slot": model_slot, "reason": "llm_error"},
         )
 
 
@@ -447,8 +469,9 @@ def run_rag_query(
             chunk_size=params["chunk_size"],
             chunk_overlap=params["chunk_overlap"],
         )
-    query_tokens = tokenize(question)
-    hits = retrieve_chunks(question, chunks, top_k=params["top_k"])
+    search_query = _translate_query_for_retrieval(question, model_config=model_config, model_slot=model_slot)
+    query_tokens = tokenize(search_query)
+    hits = retrieve_chunks(search_query, chunks, top_k=params["top_k"])
     answer, answer_mode, generation_debug = generate_grounded_answer(
         question=question,
         hits=hits,
@@ -478,6 +501,7 @@ def run_rag_query(
         "debug": {
             "strategy": STRATEGY,
             "params": params,
+            "search_query": search_query if search_query != question else None,
             "chunk_count": len(chunks),
             "query_token_count": len(query_tokens),
             "matched_chunk_count": len(hits),
