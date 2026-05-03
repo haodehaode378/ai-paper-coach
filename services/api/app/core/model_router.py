@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import time
 from time import perf_counter
 from typing import Any
 
+import httpx
 import requests
 
 from app.core.tracing import traceable_if_enabled
@@ -733,5 +735,303 @@ class ModelRouter:
 
     def minimax(self, system: str, user: str) -> dict[str, Any]:
         return self.secondary(system, user)
+
+    # ------------------------------------------------------------------
+    # Async variants (additive — sync methods unchanged)
+    # ------------------------------------------------------------------
+
+    async def _achat(
+        self,
+        *,
+        base: str,
+        key: str,
+        model: str,
+        system: str,
+        user: str,
+        timeout_sec: int = 180,
+        temperature: float = 0.2,
+    ) -> tuple[str, dict[str, Any]]:
+        if not base or not key:
+            raise RuntimeError("Missing model API configuration")
+
+        url = self._build_chat_url(base)
+        messages = []
+        if isinstance(system, str) and system.strip():
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+
+        payload_base = {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": self._resolve_max_tokens(),
+            "messages": messages,
+        }
+
+        is_kimi_k25 = self._is_kimi_model(base, model)
+        if is_kimi_k25:
+            payloads = [payload_base]
+        else:
+            payloads = [
+                {**payload_base, "response_format": {"type": "json_object"}},
+                payload_base,
+            ]
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        errors: list[str] = []
+        started = perf_counter()
+        retry_count = 0
+        http_attempts = 0
+        status_codes: list[int] = []
+        used_json_mode = not is_kimi_k25
+        payload_attempts = 0
+
+        timeout = httpx.Timeout(connect=8.0, read=float(timeout_sec), write=8.0, pool=8.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for idx, payload in enumerate(payloads, start=1):
+                payload_attempts = idx
+                max_retries = 3
+                base_delay = 2
+
+                for retry in range(max_retries):
+                    http_attempts += 1
+                    try:
+                        res = await client.post(url, json=payload, headers=headers)
+                    except Exception as e:
+                        errors.append(f"attempt{idx}: network_error={e}")
+                        break
+
+                    if not res.is_success:
+                        body = (res.text or "")[:300]
+                        status_code = res.status_code
+                        status_codes.append(int(status_code))
+
+                        if status_code in {429, 503, 504} and retry < max_retries - 1:
+                            retry_count += 1
+                            retry_after = res.headers.get("Retry-After")
+                            if retry_after:
+                                try:
+                                    wait_time = float(retry_after)
+                                except ValueError:
+                                    wait_time = base_delay * (2 ** retry)
+                            else:
+                                wait_time = base_delay * (2 ** retry)
+                            errors.append(f"attempt{idx}-retry{retry+1}: status={status_code}, waiting {wait_time:.1f}s")
+                            await asyncio.sleep(min(wait_time, 30))
+                            continue
+
+                        errors.append(f"attempt{idx}: status={status_code}, body={body}")
+                        if idx == 1 and status_code in {400, 404, 415, 422}:
+                            break
+                        break
+
+                    try:
+                        data = res.json()
+                        return data["choices"][0]["message"]["content"], {
+                            "elapsed_ms": int((perf_counter() - started) * 1000),
+                            "retry_count": retry_count,
+                            "http_attempts": http_attempts,
+                            "payload_attempts": payload_attempts,
+                            "status_codes": status_codes,
+                            "used_json_mode": used_json_mode,
+                        }
+                    except Exception as e:
+                        body = (res.text or "")[:300]
+                        errors.append(f"attempt{idx}: invalid_response={e}, body={body}")
+                        if idx == 1:
+                            break
+                        break
+
+                if idx == 1 and any(f"attempt{idx}: status=" in e for e in errors):
+                    continue
+
+        call_meta = {
+            "elapsed_ms": int((perf_counter() - started) * 1000),
+            "retry_count": retry_count,
+            "http_attempts": http_attempts,
+            "payload_attempts": payload_attempts,
+            "status_codes": status_codes,
+            "used_json_mode": used_json_mode,
+        }
+        err = RuntimeError("Model API call failed: " + " | ".join(errors))
+        setattr(err, "call_meta", call_meta)
+        raise err
+
+    async def achat_text(self, *, slot: str = "primary", system: str = "", user: str = "") -> str:
+        p = self.providers.get(slot)
+        if not p:
+            raise RuntimeError(f"Unknown provider slot: {slot}")
+
+        call_meta: dict[str, Any] = {}
+        try:
+            timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
+            temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
+            content, call_meta = await self._achat(
+                base=p["base"],
+                key=p["key"],
+                model=p["model"],
+                system=system,
+                user=user,
+                timeout_sec=timeout_sec,
+                temperature=temperature,
+            )
+            text = (content or "").strip()
+            if not text:
+                raise RuntimeError("empty_model_output")
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                response_text=text,
+                meta=call_meta,
+            )
+            return text
+        except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                error_text=str(e),
+                meta=err_meta,
+            )
+            raise RuntimeError(
+                f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
+            ) from e
+
+    async def _acall_slot(self, slot: str, system: str, user: str) -> dict[str, Any]:
+        p = self.providers.get(slot)
+        if not p:
+            raise RuntimeError(f"Unknown provider slot: {slot}")
+
+        call_meta: dict[str, Any] = {}
+        try:
+            timeout_sec = self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=False)
+            temperature = self._resolve_temperature(p["base"], p["model"], for_ping=False)
+            content, call_meta = await self._achat(
+                base=p["base"],
+                key=p["key"],
+                model=p["model"],
+                system=system,
+                user=user,
+                timeout_sec=timeout_sec,
+                temperature=temperature,
+            )
+            if not (content or "").strip() or (content or "").strip() in {"-", "—"}:
+                raise RuntimeError("empty_model_output")
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                response_text=content,
+                meta=call_meta,
+            )
+            try:
+                parsed = self.safe_json(content)
+                if self._looks_like_error_payload(parsed):
+                    raise RuntimeError("invalid_json_payload")
+                return parsed
+            except Exception:
+                repair_system = "你上一次输出不是合法 JSON。现在只输出一个合法 JSON 对象，不要任何解释和代码块。"
+                repair_source = (content or "").strip()[:12000]
+                if not repair_source:
+                    raise RuntimeError("empty_model_output_for_json_repair")
+                repair_user = f"请把下面文本修复为合法 JSON 对象：\n\n{repair_source}"
+                repaired, repair_meta = await self._achat(
+                    base=p["base"],
+                    key=p["key"],
+                    model=p["model"],
+                    system=repair_system,
+                    user=repair_user,
+                    timeout_sec=min(timeout_sec, 120),
+                    temperature=self._resolve_temperature(p["base"], p["model"], for_ping=False),
+                )
+                self._emit_trace(
+                    slot=slot,
+                    provider_name=p.get("name") or slot,
+                    model=p.get("model") or "",
+                    system=repair_system,
+                    user=repair_user,
+                    response_text=repaired,
+                    meta={
+                        **(call_meta if isinstance(call_meta, dict) else {}),
+                        "json_repair_call": True,
+                        "repair_call_meta": repair_meta,
+                    },
+                )
+                parsed = self.safe_json(repaired)
+                if self._looks_like_error_payload(parsed):
+                    raise RuntimeError("invalid_json_payload_after_repair")
+                return parsed
+        except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                error_text=str(e),
+                meta=err_meta,
+            )
+            raise RuntimeError(
+                f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
+            ) from e
+
+    async def aping_slot(self, slot: str, system: str = "", user: str = "ping") -> str:
+        p = self.providers.get(slot)
+        if not p:
+            raise RuntimeError(f"Unknown provider slot: {slot}")
+
+        call_meta: dict[str, Any] = {}
+        try:
+            ping_system = system if isinstance(system, str) and system.strip() else "You are a helpful assistant."
+            content, call_meta = await self._achat(
+                base=p["base"],
+                key=p["key"],
+                model=p["model"],
+                system=ping_system,
+                user=user,
+                timeout_sec=self._resolve_timeout(p["base"], p["model"], p["timeout_sec"], for_ping=True),
+                temperature=self._resolve_temperature(p["base"], p["model"], for_ping=True),
+            )
+            text = (content or "").strip()
+            if not text:
+                raise RuntimeError("Model returned empty content")
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                response_text=text,
+                meta=call_meta,
+            )
+            return text
+        except Exception as e:
+            err_meta = getattr(e, "call_meta", call_meta) if isinstance(getattr(e, "call_meta", call_meta), dict) else call_meta
+            self._emit_trace(
+                slot=slot,
+                provider_name=p.get("name") or slot,
+                model=p.get("model") or "",
+                system=system,
+                user=user,
+                error_text=str(e),
+                meta=err_meta,
+            )
+            raise RuntimeError(
+                f"{e} | slot={slot} | provider={p.get('name') or slot} | base_url={p.get('base') or '<empty>'} | model={p.get('model') or '<empty>'}"
+            ) from e
+
+    async def aprimary(self, system: str, user: str) -> dict[str, Any]:
+        return await self._acall_slot("primary", system, user)
+
+    async def asecondary(self, system: str, user: str) -> dict[str, Any]:
+        return await self._acall_slot("secondary", system, user)
 
 
