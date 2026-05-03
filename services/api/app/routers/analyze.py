@@ -151,13 +151,13 @@ def trace(paper_id: str):
 
 
 @router.post("/pipeline/start")
-def pipeline_start(req: PipelineStartRequest):
+async def pipeline_start(req: PipelineStartRequest):
     paper = get_paper(req.paper_id)
     if not paper:
         raise HTTPException(status_code=404, detail="paper not found")
 
     cfg = req.llm_config.model_dump() if req.llm_config else None
-    return create_job(paper_id=req.paper_id, mode=req.mode, strict=req.strict, llm_config=cfg)
+    return await create_job(paper_id=req.paper_id, mode=req.mode, strict=req.strict, llm_config=cfg)
 
 
 @router.get("/pipeline/jobs/{job_id}")
@@ -169,7 +169,7 @@ def pipeline_job_status(job_id: str):
 
 
 @router.get("/pipeline/jobs/{job_id}/events")
-def pipeline_job_events(job_id: str):
+async def pipeline_job_events(job_id: str):
     return StreamingResponse(
         stream_events(job_id),
         media_type="text/event-stream",

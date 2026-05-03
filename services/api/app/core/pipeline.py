@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Generator
+from typing import Any, AsyncGenerator
 
 from app.core.chunker import split_sections, top_chunks
 from app.core.model_router import ModelRouter
@@ -37,7 +36,7 @@ CACHE_ROOT.mkdir(parents=True, exist_ok=True)
 
 PIPELINE_JOBS: dict[str, dict[str, Any]] = {}
 PIPELINE_JOBS_LOCK = threading.RLock()
-PIPELINE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pipeline-job")
+PIPELINE_TASKS: dict[str, asyncio.Task] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +402,7 @@ def execute_finalize(*, paper_id: str, strict: bool = False, model_config: dict[
 # Pipeline job execution
 # ---------------------------------------------------------------------------
 
-def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_config: dict[str, Any] | None) -> None:
+async def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_config: dict[str, Any] | None) -> None:
     with PIPELINE_JOBS_LOCK:
         job = PIPELINE_JOBS.get(job_id)
     if not job:
@@ -419,7 +418,7 @@ def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_c
             _append_job_event(job, event_type="stage_started", stage="analyze", message="开始执行分析阶段")
             _persist_job(job)
 
-        analyze_result = execute_analyze(paper_id=paper_id, mode=mode, model_config=llm_config)
+        analyze_result = await asyncio.to_thread(execute_analyze, paper_id=paper_id, mode=mode, model_config=llm_config)
 
         with PIPELINE_JOBS_LOCK:
             _append_job_event(job, event_type="stage_completed", stage="analyze", data=analyze_result)
@@ -431,7 +430,7 @@ def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_c
                 _append_job_event(job, event_type="stage_started", stage="review", message="开始执行审阅阶段")
                 _persist_job(job)
 
-            review_result = execute_review(paper_id=paper_id, model_config=llm_config)
+            review_result = await asyncio.to_thread(execute_review, paper_id=paper_id, model_config=llm_config)
 
             with PIPELINE_JOBS_LOCK:
                 _append_job_event(job, event_type="stage_completed", stage="review", data=review_result)
@@ -442,7 +441,7 @@ def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_c
                 _append_job_event(job, event_type="stage_started", stage="finalize", message="开始执行整理阶段")
                 _persist_job(job)
 
-            finalize_result = execute_finalize(paper_id=paper_id, strict=strict or mode == "strict", model_config=llm_config)
+            finalize_result = await asyncio.to_thread(execute_finalize, paper_id=paper_id, strict=strict or mode == "strict", model_config=llm_config)
 
             with PIPELINE_JOBS_LOCK:
                 _append_job_event(job, event_type="stage_completed", stage="finalize", data=finalize_result)
@@ -458,19 +457,28 @@ def _run_pipeline_job(job_id: str, paper_id: str, mode: str, strict: bool, llm_c
             }
             _append_job_event(job, event_type="completed", stage="done", data=job["result"])
             _persist_job(job)
+    except asyncio.CancelledError:
+        with PIPELINE_JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = "cancelled"
+            _append_job_event(job, event_type="failed", stage=job.get("current_stage"), message="pipeline job cancelled")
+            _persist_job(job)
+        raise
     except Exception as exc:
         with PIPELINE_JOBS_LOCK:
             job["status"] = "failed"
             job["error"] = str(exc)
             _append_job_event(job, event_type="failed", stage=job.get("current_stage"), message=str(exc))
             _persist_job(job)
+    finally:
+        PIPELINE_TASKS.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------
 # Public API (called by router)
 # ---------------------------------------------------------------------------
 
-def create_job(*, paper_id: str, mode: str, strict: bool, llm_config: dict[str, Any] | None = None) -> dict[str, Any]:
+async def create_job(*, paper_id: str, mode: str, strict: bool, llm_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create a pipeline job and submit it for background execution."""
     job_id = str(uuid.uuid4())
     job = _new_job_payload(job_id=job_id, paper_id=paper_id, mode=mode, strict=strict)
@@ -478,7 +486,8 @@ def create_job(*, paper_id: str, mode: str, strict: bool, llm_config: dict[str, 
         PIPELINE_JOBS[job_id] = job
         _append_job_event(job, event_type="queued", stage="pending", message="任务已入队，等待后台执行")
 
-    PIPELINE_EXECUTOR.submit(_run_pipeline_job, job_id, paper_id, mode, strict, llm_config)
+    task = asyncio.create_task(_run_pipeline_job(job_id, paper_id, mode, strict, llm_config))
+    PIPELINE_TASKS[job_id] = task
     return {
         "job_id": job_id,
         "status": "running",
@@ -501,7 +510,7 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return _job_snapshot(job)
 
 
-def stream_events(job_id: str) -> Generator[str, None, None]:
+async def stream_events(job_id: str) -> AsyncGenerator[str, None]:
     """Yield SSE-formatted event lines for a pipeline job."""
     cursor = 0
     while True:
@@ -530,9 +539,14 @@ def stream_events(job_id: str) -> Generator[str, None, None]:
             yield "data: [DONE]\n\n"
             break
 
-        time.sleep(0.7)
+        await asyncio.sleep(0.7)
 
 
-def shutdown() -> None:
-    """Gracefully shut down the pipeline executor."""
-    PIPELINE_EXECUTOR.shutdown(wait=False)
+async def shutdown() -> None:
+    """Gracefully shut down all running pipeline tasks."""
+    tasks = list(PIPELINE_TASKS.values())
+    PIPELINE_TASKS.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

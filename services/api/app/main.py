@@ -99,6 +99,11 @@ def create_app() -> FastAPI:
         init_db()
         mark_stale_pipeline_jobs()
 
+    @app.on_event("shutdown")
+    async def on_shutdown() -> None:
+        from app.core.pipeline import shutdown as pipeline_shutdown
+        await pipeline_shutdown()
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
