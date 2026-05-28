@@ -143,7 +143,7 @@ A：当前版本已在 PDF 导出前做字符规范化（清理异常替代字�
   - 前端组件化拆分（ResultsView 解耦）
   - RAG 语义检索（向量数据库集成）
 
-Release Note：见 `docs/releases/v0.1.0.md`
+Release Note：见 `docs/releases/v0.1.2.md`
 
 ### 安全声明
 - API Key 不会提交到仓库：`.env`、`.env.*`、`*.env.local` 已在 `.gitignore` 中忽略。

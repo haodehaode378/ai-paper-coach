@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Full, LifoQueue
 from typing import Any
@@ -17,7 +17,7 @@ _POOL_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _conn() -> sqlite3.Connection:

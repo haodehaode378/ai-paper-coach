@@ -21,7 +21,7 @@ class ChatTurn(BaseModel):
 
 
 class ReportChatRequest(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
     report: dict[str, Any]
     messages: list[ChatTurn]

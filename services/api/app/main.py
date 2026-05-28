@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -81,8 +82,20 @@ def _allowed_origins_from_env() -> list[str]:
     return origins
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    mark_stale_pipeline_jobs()
+    try:
+        yield
+    finally:
+        from app.core.pipeline import shutdown as pipeline_shutdown
+
+        await pipeline_shutdown()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="AI Paper Coach API", version="0.1.0")
+    app = FastAPI(title="AI Paper Coach API", version="0.1.2", lifespan=lifespan)
     api_key_enabled = _truthy_env("APC_REQUIRE_API_KEY", "0")
     api_key = (os.getenv("APC_API_KEY", "") or "").strip()
 
@@ -93,16 +106,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    @app.on_event("startup")
-    def on_startup() -> None:
-        init_db()
-        mark_stale_pipeline_jobs()
-
-    @app.on_event("shutdown")
-    async def on_shutdown() -> None:
-        from app.core.pipeline import shutdown as pipeline_shutdown
-        await pipeline_shutdown()
 
     @app.get("/health")
     def health() -> dict[str, Any]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 from fastapi.testclient import TestClient
 
 from app.core.storage import create_paper, create_run, save_final
@@ -9,6 +11,17 @@ from app.routers import export as export_router
 def _assert_envelope(payload: dict):
     assert isinstance(payload, dict)
     assert {"success", "data", "error"}.issubset(payload.keys())
+
+
+def _pdf_bytes(text: str = "Demo PDF") -> bytes:
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer)
+    c.drawString(72, 720, text)
+    c.showPage()
+    c.save()
+    return buffer.getvalue()
 
 
 def test_health_returns_enveloped_success(client: TestClient):
@@ -32,8 +45,7 @@ def test_ingest_json_returns_paper_id_in_data(client: TestClient):
 
 
 def test_ingest_pdf_upload_returns_paper_id_in_data(client: TestClient):
-    pdf_content = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
-    files = {"file": ("demo.pdf", pdf_content, "application/pdf")}
+    files = {"file": ("demo.pdf", _pdf_bytes(), "application/pdf")}
     resp = client.post("/ingest", files=files)
     assert resp.status_code == 200
     payload = resp.json()
