@@ -1,0 +1,18 @@
+[package]
+name = "ai-paper-coach-desktop"
+version = "0.1.2"
+description = "AI Paper Coach desktop application"
+authors = ["AI Paper Coach"]
+edition = "2021"
+
+[lib]
+name = "ai_paper_coach_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+uuid = { version = "1", features = ["v4"] }

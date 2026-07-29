@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-DATA_ROOT = Path(__file__).resolve().parents[3] / "data"
+from app.core.paths import DATA_ROOT, ensure_data_directories
+
+ensure_data_directories(DATA_ROOT)
+
 HISTORY_ROOT = DATA_ROOT / "history"
 SAVED_ROOT = DATA_ROOT / "saved"
 UPLOADS_ROOT = DATA_ROOT / "uploads"
 CACHE_ROOT = DATA_ROOT / "cache"
-
-for root in (HISTORY_ROOT, SAVED_ROOT, UPLOADS_ROOT, CACHE_ROOT):
-    root.mkdir(parents=True, exist_ok=True)
 
 
 def _json_path(root: Path, record_id: str) -> Path:

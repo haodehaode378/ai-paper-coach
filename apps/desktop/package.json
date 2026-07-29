@@ -1,0 +1,15 @@
+{
+  "name": "ai-paper-coach-desktop",
+  "private": true,
+  "version": "0.1.2",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build:sidecar && tauri dev",
+    "build:sidecar": "powershell -ExecutionPolicy Bypass -File ./scripts/build-sidecar.ps1",
+    "build": "npm run build:sidecar && tauri build",
+    "info": "tauri info"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

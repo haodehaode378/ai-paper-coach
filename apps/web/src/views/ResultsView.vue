@@ -3,7 +3,7 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } f
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import RunDiagnosticsPanel from '../components/RunDiagnosticsPanel.vue'
-import { callApi } from '../lib/api'
+import { callApi, withDesktopAuthHeaders } from '../lib/api'
 import { buildModelConfig, loadLastResult, loadModelConfig } from '../lib/storage'
 import { useTraceHistory } from '../composables/useTraceHistory'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -692,7 +692,7 @@ async function loadPdfDocument(force = false) {
   pdfPageCount.value = 0
 
   try {
-    const response = await fetch(url)
+    const response = await fetch(url, { headers: withDesktopAuthHeaders() })
     if (!response.ok) {
       throw new Error(extractErrorText(await response.text()) || `HTTP ${response.status}`)
     }
@@ -728,7 +728,7 @@ function nextPdfPage() {
 async function streamChatReply(base, payload, userTurns) {
   const response = await fetch(`${String(base || '').trim().replace(/\/$/, '')}/chat/report/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withDesktopAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
   })
 

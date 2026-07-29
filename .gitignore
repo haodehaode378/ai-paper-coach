@@ -14,6 +14,10 @@ data/uploads/
 services/data/*.db
 apps/web/dist/
 apps/web/node_modules/
+apps/desktop/node_modules/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/*.exe
 services/data/history/
 
 # Secrets and local runtime configs

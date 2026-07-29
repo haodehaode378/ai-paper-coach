@@ -744,6 +744,19 @@ button {
   box-sizing: border-box;
 }
 
+.cloud-consent {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cloud-consent input {
+  margin-top: 3px;
+}
+
 .result-split-shell-chat-open {
   padding-right: var(--result-chat-offset, 502px);
 }

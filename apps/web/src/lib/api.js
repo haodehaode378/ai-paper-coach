@@ -22,7 +22,11 @@
   }
 
   try {
-    const response = await fetch(`${normalizedBase}${path}`, { ...options, signal: controller.signal })
+    const response = await fetch(`${normalizedBase}${path}`, {
+      ...options,
+      headers: withDesktopAuthHeaders(options.headers),
+      signal: controller.signal
+    })
     if (!response.ok) {
       const errText = await parseErrorPayload(response)
       throw new Error(`${response.status} ${response.statusText}: ${errText}`)
@@ -52,6 +56,13 @@
   } finally {
     window.clearTimeout(timer)
   }
+}
+
+export function withDesktopAuthHeaders(headers = {}) {
+  const next = new Headers(headers)
+  const token = String(window.__APC_DESKTOP_API_TOKEN__ || '').trim()
+  if (token) next.set('X-API-Key', token)
+  return next
 }
 
 export function isTimeoutError(error) {

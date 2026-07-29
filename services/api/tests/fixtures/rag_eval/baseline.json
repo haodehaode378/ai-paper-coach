@@ -1,0 +1,110 @@
+{
+  "version": "synthetic-v1",
+  "top_k": 3,
+  "expected_baseline": {
+    "recall_at_k": 0.8,
+    "mrr_at_k": 0.8,
+    "no_answer_accuracy": 0.5
+  },
+  "documents": [
+    {
+      "id": "transformer-paper",
+      "chunks": [
+        {
+          "id": "transformer-attention",
+          "content": "The ablation study shows that attention improves translation quality."
+        },
+        {
+          "id": "transformer-appendix",
+          "content": "The appendix lists hardware details and software licenses."
+        },
+        {
+          "id": "transformer-dataset",
+          "content": "Training uses the WMT14 English-German translation dataset."
+        }
+      ]
+    },
+    {
+      "id": "speaker-paper",
+      "chunks": [
+        {
+          "id": "speaker-task",
+          "content": "Speaker diarization and recognition determines who spoke when and what was said."
+        },
+        {
+          "id": "speaker-metrics",
+          "content": "The evaluation reports diarization error rate and word error rate."
+        }
+      ]
+    },
+    {
+      "id": "multimodal-paper",
+      "chunks": [
+        {
+          "id": "multimodal-alignment",
+          "content": "The method aligns audio and visual streams with cross-modal temporal attention."
+        },
+        {
+          "id": "multimodal-ethics",
+          "content": "The appendix discusses ethics, consent, and data collection."
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "english-factual",
+      "document_id": "transformer-paper",
+      "question": "What improves translation quality?",
+      "relevant_chunk_ids": [
+        "transformer-attention"
+      ]
+    },
+    {
+      "id": "cross-language-factual",
+      "document_id": "transformer-paper",
+      "question": "什么提高了翻译质量？",
+      "relevant_chunk_ids": [
+        "transformer-attention"
+      ]
+    },
+    {
+      "id": "dataset-factual",
+      "document_id": "transformer-paper",
+      "question": "Which dataset is used for training?",
+      "relevant_chunk_ids": [
+        "transformer-dataset"
+      ]
+    },
+    {
+      "id": "speaker-factual",
+      "document_id": "speaker-paper",
+      "question": "What does speaker diarization and recognition determine?",
+      "relevant_chunk_ids": [
+        "speaker-task"
+      ]
+    },
+    {
+      "id": "multimodal-factual",
+      "document_id": "multimodal-paper",
+      "question": "How are audio and visual streams aligned?",
+      "relevant_chunk_ids": [
+        "multimodal-alignment"
+      ]
+    },
+    {
+      "id": "no-answer-distinct",
+      "document_id": "transformer-paper",
+      "question": "unrelatedbiologyterm",
+      "expect_no_answer": true,
+      "relevant_chunk_ids": []
+    },
+    {
+      "id": "no-answer-stopword",
+      "document_id": "transformer-paper",
+      "question": "the",
+      "expect_no_answer": true,
+      "relevant_chunk_ids": []
+    }
+  ]
+}

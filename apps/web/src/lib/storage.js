@@ -3,16 +3,37 @@ export const SESSION_SECRET_KEY = 'apc_model_secrets_session_v1'
 export const LAST_RESULT_KEY = 'apc_last_result_v1'
 export const TRACE_HISTORY_KEY = 'apc_trace_history_v1'
 
+export const PROVIDER_PRESETS = {
+  qwen: {
+    label: '通义千问',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus'
+  },
+  minimax: {
+    label: 'MiniMax',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    model: 'MiniMax-M2.5'
+  },
+  openai_compatible: {
+    label: 'OpenAI-compatible 自定义接口',
+    baseUrl: '',
+    model: ''
+  }
+}
+
 export const defaultFormState = () => ({
-  apiBase: 'http://localhost:8000',
+  apiBase: window.__APC_DESKTOP_API_BASE__ || 'http://localhost:8000',
   paperUrl: '',
   runMode: 'deep',
-  qwenBase: 'https://api.moonshot.cn/v1',
+  primaryProvider: 'qwen',
+  secondaryProvider: 'minimax',
+  cloudConsent: false,
+  qwenBase: PROVIDER_PRESETS.qwen.baseUrl,
   qwenKey: '',
-  qwenModel: 'kimi-k2.5',
-  minimaxBase: 'https://api.minimaxi.com/v1',
+  qwenModel: PROVIDER_PRESETS.qwen.model,
+  minimaxBase: PROVIDER_PRESETS.minimax.baseUrl,
   minimaxKey: '',
-  minimaxModel: 'MiniMax-M2.5'
+  minimaxModel: PROVIDER_PRESETS.minimax.model
 })
 
 function readJson(storage, key) {
@@ -46,21 +67,26 @@ function buildSessionSecrets(form) {
 }
 
 export function buildModelConfig(form) {
+  const primaryProvider = form.primaryProvider || 'qwen'
+  const secondaryProvider = form.secondaryProvider || 'minimax'
   const modelA = {
-    name: 'Model A',
+    provider_id: primaryProvider,
+    name: PROVIDER_PRESETS[primaryProvider]?.label || 'Model A',
     base_url: String(form.qwenBase || '').trim(),
     api_key: String(form.qwenKey || '').trim(),
-    model: String(form.qwenModel || '').trim() || 'kimi-k2.5'
+    model: String(form.qwenModel || '').trim()
   }
 
   const modelB = {
-    name: 'Model B',
+    provider_id: secondaryProvider,
+    name: PROVIDER_PRESETS[secondaryProvider]?.label || 'Model B',
     base_url: String(form.minimaxBase || '').trim() || 'https://api.minimaxi.com/v1',
     api_key: String(form.minimaxKey || '').trim(),
     model: String(form.minimaxModel || '').trim() || 'MiniMax-M2.5'
   }
 
   return {
+    cloud_consent: Boolean(form.cloudConsent),
     primary: modelA,
     secondary: modelB,
     provider_a: modelA,
@@ -75,6 +101,9 @@ export function applyModelConfigToForm(form, config) {
   const qwen = config?.primary || config?.provider_a || config?.qwen || {}
   const minimax = config?.secondary || config?.provider_b || config?.minimax || {}
 
+  next.primaryProvider = qwen.provider_id || inferProviderId(qwen.base_url, 'qwen')
+  next.secondaryProvider = minimax.provider_id || inferProviderId(minimax.base_url, 'minimax')
+  next.cloudConsent = config?.cloud_consent === true
   next.qwenBase = qwen.base_url || next.qwenBase
   next.qwenKey = qwen.api_key || next.qwenKey || ''
   next.qwenModel = qwen.model || next.qwenModel
@@ -87,6 +116,30 @@ export function applyModelConfigToForm(form, config) {
   }
 
   return next
+}
+
+function inferProviderId(baseUrl, fallback) {
+  const value = String(baseUrl || '').toLowerCase()
+  if (!value) return fallback
+  if (value.includes('dashscope.aliyuncs.com')) return 'qwen'
+  if (value.includes('minimaxi.com') || value.includes('minimax.chat')) return 'minimax'
+  return 'openai_compatible'
+}
+
+export function applyProviderPreset(form, slot, providerId) {
+  const preset = PROVIDER_PRESETS[providerId]
+  if (!preset) return
+
+  if (slot === 'primary') {
+    form.primaryProvider = providerId
+    form.qwenBase = preset.baseUrl
+    form.qwenModel = preset.model
+    return
+  }
+
+  form.secondaryProvider = providerId
+  form.minimaxBase = preset.baseUrl
+  form.minimaxModel = preset.model
 }
 
 // Security policy:

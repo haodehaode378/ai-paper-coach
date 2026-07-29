@@ -56,6 +56,7 @@ class ModelRouter:
         cfg = model_config or {}
         self.trace_hook = trace_hook
         self.trace_phase = trace_phase
+        self.cloud_consent = cfg.get("cloud_consent")
 
         def _first_provider_cfg(*keys: str) -> dict[str, Any]:
             for key in keys:
@@ -104,6 +105,7 @@ class ModelRouter:
         self.providers: dict[str, dict[str, Any]] = {
             "primary": {
                 "slot": "primary",
+                "provider_id": primary_cfg.get("provider_id"),
                 "name": primary_name,
                 "base": _pick(primary_cfg.get("base_url"), "QWEN_API_BASE", "").rstrip("/"),
                 "key": _clean_api_key(_pick(primary_cfg.get("api_key"), "QWEN_API_KEY", "")),
@@ -112,6 +114,7 @@ class ModelRouter:
             },
             "secondary": {
                 "slot": "secondary",
+                "provider_id": secondary_cfg.get("provider_id"),
                 "name": secondary_name,
                 "base": _pick(secondary_cfg.get("base_url"), "MINIMAX_API_BASE", "").rstrip("/"),
                 "key": _clean_api_key(_pick(secondary_cfg.get("api_key"), "MINIMAX_API_KEY", "")),
@@ -130,6 +133,12 @@ class ModelRouter:
         self.minimax_key = self.providers["secondary"]["key"]
         self.minimax_model = self.providers["secondary"]["model"]
         self.minimax_timeout_sec = self.providers["secondary"]["timeout_sec"]
+
+    def _require_cloud_consent(self) -> None:
+        if self.cloud_consent is False:
+            raise RuntimeError(
+                "Cloud processing consent is required before paper content can be sent to a model provider"
+            )
 
     @staticmethod
     def _build_chat_url(base: str) -> str:
@@ -181,6 +190,7 @@ class ModelRouter:
         p = self.providers.get(slot, {})
         return {
             "slot": slot,
+            "provider_id": p.get("provider_id"),
             "name": p.get("name") or slot,
             "base_url": p.get("base") or "",
             "model": p.get("model") or "",
@@ -204,6 +214,7 @@ class ModelRouter:
         timeout_sec: int = 180,
         temperature: float = 0.2,
     ) -> tuple[str, dict[str, Any]]:
+        self._require_cloud_consent()
         if not base or not key:
             raise RuntimeError("Missing model API configuration")
 
@@ -399,7 +410,9 @@ class ModelRouter:
             return best_obj
 
         raise ValueError("Unable to parse JSON object from model response")
+
     def _chat_stream(self, *, base: str, key: str, model: str, system: str, user: str, timeout_sec: int = 180, temperature: float = 0.2):
+        self._require_cloud_consent()
         if not base or not key:
             raise RuntimeError("Missing model API configuration")
 
@@ -751,6 +764,7 @@ class ModelRouter:
         timeout_sec: int = 180,
         temperature: float = 0.2,
     ) -> tuple[str, dict[str, Any]]:
+        self._require_cloud_consent()
         if not base or not key:
             raise RuntimeError("Missing model API configuration")
 
@@ -1033,5 +1047,3 @@ class ModelRouter:
 
     async def asecondary(self, system: str, user: str) -> dict[str, Any]:
         return await self._acall_slot("secondary", system, user)
-
-

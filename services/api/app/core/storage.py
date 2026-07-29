@@ -9,7 +9,9 @@ from pathlib import Path
 from queue import Empty, Full, LifoQueue
 from typing import Any
 
-DB_PATH = Path(__file__).resolve().parents[3] / "data" / "app.db"
+from app.core.paths import DATA_ROOT
+
+DB_PATH = DATA_ROOT / "app.db"
 _POOL_MAX = max(1, int((os.getenv("APC_SQLITE_POOL_SIZE", "8") or "8").strip()))
 _POOL: LifoQueue[sqlite3.Connection] = LifoQueue(maxsize=_POOL_MAX)
 _POOL_CREATED = 0

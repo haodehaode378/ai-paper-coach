@@ -1,7 +1,13 @@
-﻿from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+ProviderId = Literal["qwen", "minimax", "openai_compatible"]
 
 
 class ProviderConfig(BaseModel):
+    provider_id: ProviderId | None = None
     name: str | None = None
     base_url: str | None = None
     api_key: str | None = None
@@ -10,6 +16,10 @@ class ProviderConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
+    # None preserves compatibility with server-side environment configuration.
+    # New desktop clients always send an explicit boolean.
+    cloud_consent: bool | None = None
+
     # Generic slots (recommended)
     primary: ProviderConfig | None = None
     secondary: ProviderConfig | None = None

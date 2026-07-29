@@ -5,6 +5,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import RunDiagnosticsPanel from '../components/RunDiagnosticsPanel.vue'
 import { callApi, isTimeoutError } from '../lib/api'
 import {
+  applyProviderPreset,
   buildModelConfig,
   clearModelConfig,
   defaultFormState,
@@ -79,6 +80,16 @@ function currentModelConfig() {
   return buildModelConfig(form.value)
 }
 
+function onProviderChange(slot, event) {
+  applyProviderPreset(form.value, slot, event.target.value)
+}
+
+function requireCloudConsent() {
+  if (!form.value.cloudConsent) {
+    throw new Error('请先确认并授权将论文内容发送给所选云端模型厂商。')
+  }
+}
+
 function onFileChange(event) {
   paperFile.value = event.target.files?.[0] || null
 }
@@ -118,6 +129,7 @@ async function handleCheckApiConnection() {
 
 async function handleValidateConfig() {
   try {
+    requireCloudConsent()
     addStatus('开始校验模型接口配置...')
     const data = await callApi(form.value.apiBase, '/validate-models', {
       method: 'POST',
@@ -405,6 +417,7 @@ const currentModelLabel = computed(() => {
 
 async function runPipeline() {
   try {
+    requireCloudConsent()
     isRunning.value = true
     statuses.value = []
     resetStageState()
@@ -597,6 +610,14 @@ onMounted(() => {
           </div>
           <div class="detail-stack">
             <label class="field">
+              <span>模型 A 厂商</span>
+              <select :value="form.primaryProvider" @change="onProviderChange('primary', $event)">
+                <option value="qwen">通义千问</option>
+                <option value="minimax">MiniMax</option>
+                <option value="openai_compatible">OpenAI-compatible 自定义接口</option>
+              </select>
+            </label>
+            <label class="field">
               <span>模型 A 接口地址</span>
               <input v-model="form.qwenBase" autocomplete="off" />
             </label>
@@ -607,6 +628,14 @@ onMounted(() => {
             <label class="field">
               <span>模型 A 名称</span>
               <input v-model="form.qwenModel" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>模型 B 厂商</span>
+              <select :value="form.secondaryProvider" @change="onProviderChange('secondary', $event)">
+                <option value="qwen">通义千问</option>
+                <option value="minimax">MiniMax</option>
+                <option value="openai_compatible">OpenAI-compatible 自定义接口</option>
+              </select>
             </label>
             <label class="field">
               <span>模型 B 接口地址</span>
@@ -620,6 +649,11 @@ onMounted(() => {
               <span>模型 B 名称</span>
               <input v-model="form.minimaxModel" autocomplete="off" />
             </label>
+            <label class="cloud-consent">
+              <input v-model="form.cloudConsent" type="checkbox" />
+              <span>我已知晓并授权：运行时论文内容会发送给所选云端模型厂商处理。</span>
+            </label>
+            <p class="panel-subtitle">API Key 仅保存在当前会话中；关闭应用后需要重新填写。</p>
           </div>
           <div class="button-column">
             <button class="button button-secondary" @click="handleSaveConfig">保存配置</button>
